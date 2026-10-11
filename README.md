@@ -174,11 +174,18 @@ The playbook stops if the pool still holds VMs. It removes:
 Pass `-e confirm=<pool>` to skip the prompt. It leaves the cloud image and
 the host preparation in place.
 
-## Not yet tested against a live deployment
+## Tested
 
-These are written from the Kolla-Ansible and Ceph documentation but have not
-been run end to end yet. Check them first if a step fails:
+Built end to end on lenora on 11 October 2026. All services are up on all
+three nodes. As the demo customer, an instance booted from a raw image on
+Ceph, was reachable by ping and SSH on its floating IP from the LAN,
+stored and listed objects through Swift (RGW), and got an Amphora load
+balancer to ACTIVE/ONLINE.
 
-- CloudKitty with the OpenSearch storage backend (`cloudkitty_storage_backend`)
-- The Octavia test amphora image for Ubuntu Noble (`amphora_image_url`)
-- The Ceph keyring layout under `/etc/kolla/config` for 2026.1
+Known:
+
+- Ceph reports slow BlueStore operations on the OSDs when they sit on
+  `hddpool`, which is HDD-backed zvols. Expected; put the OSD disks on SSD if
+  that matters.
+- The CloudKitty rating rules and Designate zones are not configured; the
+  services are deployed and empty.

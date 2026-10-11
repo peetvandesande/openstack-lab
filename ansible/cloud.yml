@@ -49,8 +49,10 @@
       loop_control:
         label: "{{ item.name }}"
 
+    # Not in the collection's action group, so module_defaults miss it
     - name: Create the volume type
       openstack.cloud.volume_type:
+        cloud: "{{ cloud }}"
         name: standard
         description: Ceph RBD, 3 replicas
         extra_specs:
