@@ -12,6 +12,7 @@
       ansible.builtin.include_tasks: tasks/kolla.yml
       vars:
         kolla_action: prechecks
+        kolla_args: "{{ '--use-test-images' if kolla_use_test_images else '' }}"
 
     - name: Pull the images first, so a slow registry does not time out the deploy
       ansible.builtin.include_tasks: tasks/kolla.yml

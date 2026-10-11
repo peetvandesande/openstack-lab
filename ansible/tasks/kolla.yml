@@ -4,11 +4,11 @@
   ansible.builtin.shell: |
     set -o pipefail
     mkdir -p ~/kolla-logs
-    kolla-ansible {{ kolla_action }} -i /etc/kolla/multinode 2>&1 | tee ~/kolla-logs/{{ kolla_action }}.log | tail -n 40
+    kolla-ansible {{ kolla_action }} -i /etc/kolla/multinode {{ kolla_args | default('') }} 2>&1 | tee ~/kolla-logs/{{ kolla_action }}.log | tail -n 40
   args:
     executable: /bin/bash
   environment:
-    PATH: "{{ kolla_venv }}/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ kolla_venv }}/bin:{{ ansible_facts.env.PATH }}"
     VIRTUAL_ENV: "{{ kolla_venv }}"
   become: true
   become_user: "{{ kolla_user }}"

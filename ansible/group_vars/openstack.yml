@@ -9,8 +9,15 @@ openstack_release: "2026.1"
 kolla_ansible_source: git+https://opendev.org/openstack/kolla-ansible@stable/{{ openstack_release }}
 kolla_venv: /opt/kolla/venv
 kolla_user: ubuntu
+# The upstream images on quay.io/openstack.kolla are built for CI, and the
+# prechecks refuse them unless told otherwise. Fine for a lab; build or
+# mirror your own images for anything else
+kolla_use_test_images: true
 
-ceph_image: quay.io/ceph/ceph:v19
+# Pinned to the version of Ubuntu's ceph-common: later Squid releases create
+# keys in a format older clients (the host CLI, the OpenStack containers)
+# cannot parse
+ceph_image: quay.io/ceph/ceph:v19.2.3
 
 # Derived from network.conf
 internal_vip: "{{ vips.internal }}"

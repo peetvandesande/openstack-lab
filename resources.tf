@@ -15,8 +15,10 @@ locals {
     repl = { vnet = local.net.replication_vnet, subnet = local.net.replication_subnet }
     tun  = { vnet = local.net.tunnel_vnet, subnet = local.net.tunnel_subnet }
     ext  = { vnet = local.net.provider_vnet, subnet = null }
+    lbm  = { vnet = local.net.lbmgmt_vnet, subnet = local.net.lbmgmt_subnet }
+    lbmp = { vnet = local.net.lbmgmt_vnet, subnet = null }
   }
-  nic_order = ["mgmt", "api", "stor", "repl", "tun", "ext"]
+  nic_order = ["mgmt", "api", "stor", "repl", "tun", "ext", "lbm", "lbmp"]
 
   nodes = {
     for i in range(var.node_count) : "${var.name_prefix}-${i + 1}" => {

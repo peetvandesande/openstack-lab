@@ -26,6 +26,20 @@
         content: "network: {config: disabled}\n"
         mode: "0644"
 
+    # Kolla-Ansible requires each hostname to resolve to the node's
+    # management address only; cloud-init maps it to 127.0.1.1 on every boot
+    - name: Stop cloud-init managing /etc/hosts
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-disable-etc-hosts.cfg
+        content: "manage_etc_hosts: false\n"
+        mode: "0644"
+
+    - name: Remove the loopback entry for the hostname
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        state: absent
+
     - name: Write the network configuration
       ansible.builtin.template:
         src: netplan.yaml.j2

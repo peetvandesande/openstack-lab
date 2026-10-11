@@ -55,6 +55,7 @@ overlaps it. [NETWORK.md](NETWORK.md) has the design and the address plan.
 | repl (`osrepl`) | `192.168.35.0/24` | Ceph replication, isolated |
 | tun (`ostun`) | `192.168.36.0/24` | Geneve tunnels, isolated |
 | ext (`osext`) | `192.168.37.0/24` | Provider network, floating IPs `.100-.250` |
+| lbm, lbmp (`oslbm`) | `192.168.38.0/24` | Octavia management, isolated |
 
 ## DNS
 
@@ -105,7 +106,7 @@ The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
    ansible-playbook ansible/bootstrap.yml
    ```
 
-   This builds SDN zone `openstk` with the six vnets, registers the lab in
+   This builds SDN zone `openstk` with the seven vnets, registers the lab in
    DNS, downloads the Ubuntu
    24.04 cloud image, and creates the pool, a `terraform@pve` user and an API
    token with the minimum permissions. It checks that the VMIDs are free and

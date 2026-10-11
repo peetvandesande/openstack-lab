@@ -58,6 +58,12 @@
       changed_when: true
       no_log: true
 
+    # Bootstrap sets the public network for the monitors only; without it
+    # globally, an OSD may bind to whichever address it finds first on start
+    - name: Set the public network for every daemon
+      ansible.builtin.command: ceph config set global public_network {{ lab_net.storage_subnet }}
+      changed_when: false
+
     - name: Read the orchestrator's SSH key
       ansible.builtin.slurp:
         src: /etc/ceph/ceph.pub

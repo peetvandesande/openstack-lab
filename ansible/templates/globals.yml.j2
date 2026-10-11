@@ -12,7 +12,8 @@ kolla_external_vip_interface: "api"
 storage_interface: "stor"
 tunnel_interface: "tun"
 dns_interface: "api"
-neutron_external_interface: "ext"
+neutron_external_interface: "ext,lbmp"
+neutron_bridge_name: "br-ex,br-lbm"
 
 # HAProxy and keepalived in front of every API, on two VIPs
 kolla_internal_vip_address: "{{ internal_vip }}"
@@ -43,18 +44,38 @@ enable_cinder_backup: "yes"
 glance_backend_ceph: "yes"
 cinder_backend_ceph: "yes"
 cinder_backup_driver: "ceph"
+# Active-active cinder-volume on every node, coordinated through Valkey
+cinder_cluster_name: "openstack-lab"
 nova_backend_ceph: "yes"
+
+# Coordination for active-active Cinder on Ceph, and Octavia's jobboard
+enable_valkey: "yes"
 
 # Orchestration
 enable_heat: "yes"
 enable_horizon: "yes"
 
-# Load balancers. Amphora VMs reach the health managers over a tenant
-# network; the OVN provider needs no VMs at all
+# Load balancers. Amphora VMs sit on a flat provider network (physnet2,
+# br-lbm) and reach the health managers on the nodes' lbm addresses; with
+# OVN, Kolla does not support a tenant network for this. The OVN provider
+# needs no VMs at all
 enable_octavia: "{{ enable_octavia | ternary('yes', 'no') }}"
 {% if enable_octavia %}
 octavia_auto_configure: "yes"
-octavia_network_type: "tenant"
+octavia_network_type: "provider"
+octavia_network_interface: "lbm"
+octavia_amp_network:
+  name: lb-mgmt-net
+  provider_network_type: flat
+  provider_physical_network: physnet2
+  external: false
+  shared: false
+  subnet:
+    name: lb-mgmt-subnet
+    cidr: "{{ lab_net.lbmgmt_subnet }}"
+    allocation_pool_start: "{{ lab_net.lbmgmt_pool_start }}"
+    allocation_pool_end: "{{ lab_net.lbmgmt_pool_end }}"
+    enable_dhcp: yes
 {% endif %}
 
 # DNS as a service, served by BIND on the public network
@@ -63,6 +84,8 @@ enable_designate: "{{ enable_designate | ternary('yes', 'no') }}"
 designate_backend: "bind9"
 designate_ns_record:
   - "ns1.{{ lab_net.domain }}"
+# Instance names, kept apart from the lab's own records in DOMAIN
+neutron_dns_domain: "cloud.{{ lab_net.domain }}."
 {% endif %}
 
 # Secrets (Octavia TLS listeners, encrypted volumes)

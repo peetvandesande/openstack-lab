@@ -115,6 +115,7 @@
         - { name: "{{ lab_net.replication_vnet }}", alias: Ceph cluster, subnet: "{{ lab_net.replication_subnet }}", gateway: "" }
         - { name: "{{ lab_net.tunnel_vnet }}", alias: OpenStack tunnels, subnet: "{{ lab_net.tunnel_subnet }}", gateway: "" }
         - { name: "{{ lab_net.provider_vnet }}", alias: OpenStack provider, subnet: "{{ lab_net.provider_subnet }}", gateway: "{{ lab_net.provider_gateway }}" }
+        - { name: "{{ lab_net.lbmgmt_vnet }}", alias: Octavia management, subnet: "{{ lab_net.lbmgmt_subnet }}", gateway: "" }
 
     - name: Apply the SDN configuration
       ansible.builtin.command: pvesh set /cluster/sdn

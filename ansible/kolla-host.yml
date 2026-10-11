@@ -24,6 +24,25 @@
   hosts: openstack[0]
   gather_facts: true
   tasks:
+    # Kolla-Ansible and cephadm check host keys; the nodes get new ones every
+    # time they are recreated, so collect them fresh
+    - name: Read the nodes' host keys
+      ansible.builtin.command: ssh-keyscan -t ed25519 {{ item }}
+      loop: "{{ groups['openstack'] | map('extract', hostvars, 'ansible_host') | list }}"
+      register: host_keys
+      changed_when: false
+
+    - name: Trust the nodes' host keys
+      ansible.builtin.known_hosts:
+        path: ~{{ kolla_user }}/.ssh/known_hosts
+        name: "{{ item.item }}"
+        key: "{{ item.stdout_lines | select('match', '^[^#]') | first }}"
+      loop: "{{ host_keys.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      become: true
+      become_user: "{{ kolla_user }}"
+
     - name: Install the build dependencies
       ansible.builtin.apt:
         name: [git, python3-venv, python3-dev, libffi-dev, gcc, libssl-dev, libdbus-glib-1-dev]
@@ -69,7 +88,7 @@
         - name: Install the Ansible collections Kolla-Ansible needs
           ansible.builtin.command: "{{ kolla_venv }}/bin/kolla-ansible install-deps"
           environment:
-            PATH: "{{ kolla_venv }}/bin:{{ ansible_env.PATH }}"
+            PATH: "{{ kolla_venv }}/bin:{{ ansible_facts.env.PATH }}"
           changed_when: false
 
     - name: Find the Kolla-Ansible examples
@@ -78,11 +97,13 @@
         patterns: [passwords.yml, multinode]
         recurse: true
       register: examples
+      tags: kolla-config
 
     - name: Read the example inventory
       ansible.builtin.slurp:
         src: "{{ examples.files | map(attribute='path') | select('search', '/inventory/multinode$') | first }}"
       register: example_inventory
+      tags: kolla-config
 
     - name: Write globals.yml and the inventory
       ansible.builtin.template:
@@ -95,6 +116,7 @@
         - { src: multinode.j2, dest: multinode }
       vars:
         kolla_example_inventory: "{{ example_inventory.content | b64decode }}"
+      tags: kolla-config
 
     # kolla-genpwd only fills in empty entries, so re-running keeps the
     # existing passwords

@@ -16,8 +16,10 @@ lenora vmbr0 (lenora.home), forwarding on
       ├── osstor  192.168.34.0/24  –       net2  stor  Ceph public network
       ├── osrepl  192.168.35.0/24  –       net3  repl  Ceph cluster network
       ├── ostun   192.168.36.0/24  –       net4  tun   Geneve tunnels
-      └── osext   192.168.37.0/24  gw .1   net5  ext   provider network (br-ex), no node address
-                                                       floating IPs .100-.250
+      ├── osext   192.168.37.0/24  gw .1   net5  ext   provider network (br-ex), no node address
+      │                                                floating IPs .100-.250
+      └── oslbm   192.168.38.0/24  –       net6  lbm   Octavia health managers
+                                           net7  lbmp  lb-mgmt-net (br-lbm, physnet2), amphorae .100-.250
 ```
 
 Nodes `os-1/2/3` are `.11/.12/.13` on every network that has node
@@ -36,6 +38,7 @@ diagram.
 | Source-based routing for the API network | The default route is on mgmt. Without a second table, replies from the public VIP would leave through mgmt. |
 | Isolated storage, replication and tunnel networks | No gateway on lenora, so the host doesn't route them. Only the nodes talk on them. |
 | Flat provider network on lenora | Floating IPs are directly connected to lenora, so no static routes to the cloud are needed. |
+| Octavia on its own isolated network | With OVN, Kolla only supports a provider network for the amphorae. Each node has two NICs on it: one with an address for the health managers, one for Open vSwitch. |
 | OVN with distributed floating IPs | No central network node becomes a bottleneck or a single point of failure. |
 | MTU 1500 | OVN lowers the tenant MTU to fit the Geneve header. Jumbo frames on nested VMs aren't worth it in a lab. |
 | Same range as nutanix-lab | The router already routes `192.168.32.0/21` to lenora. The labs never run at the same time, and the bootstrap checks for that. |
