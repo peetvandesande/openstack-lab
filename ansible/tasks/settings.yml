@@ -1,0 +1,46 @@
+# Reads the lab settings into `lab` (terraform.tfvars, falling back to the
+# defaults in variables.tf) and `lab_net` (network.conf, lowercase keys).
+# Runs on the control node.
+- name: Read the OpenTofu settings
+  ansible.builtin.set_fact:
+    lab: "{{ lab | default({}) | combine({item: from_tfvars or from_default}) }}"
+  loop: [pm_endpoint, node_name, pool_id, datastore_id, cloud_image_file_id, cloud_image_url, vm_id_start, node_count, name_prefix]
+  vars:
+    tfvars: "{{ lookup('ansible.builtin.file', repo ~ '/terraform.tfvars', errors='ignore') | default('', true) }}"
+    variables_tf: "{{ lookup('ansible.builtin.file', repo ~ '/variables.tf') }}"
+    from_tfvars: |-
+      {{ ((tfvars | regex_findall('(?m)^[ \t]*' ~ item ~ '[ \t]*=[ \t]*"?([^"#\r\n]*)')) or ['']) | last | trim }}
+    from_default: |-
+      {{ ((variables_tf | regex_findall('variable "' ~ item ~ '"[^}]*?default[ \t]*=[ \t]*"?([^"\r\n]*)')) or ['']) | last | trim }}
+
+- name: Read the network settings
+  ansible.builtin.set_fact:
+    lab_net: "{{ dict(pairs | map('first') | map('lower') | zip(pairs | map('last') | map('trim'))) }}"
+  vars:
+    pairs: "{{ lookup('ansible.builtin.file', repo ~ '/network.conf') | regex_findall('(?m)^([A-Z_]+)=\"?([^\"\\r\\n]*)\"?') }}"
+
+# The PowerDNS API key: PDNS_API_KEY from the environment, else AUTH_API_KEY
+# from PDNS_API_KEY_FILE
+- name: Read the PowerDNS API key
+  ansible.builtin.set_fact:
+    pdns_api_key: >-
+      {{ lookup('ansible.builtin.env', 'PDNS_API_KEY')
+         or ((key_file | regex_findall('(?m)^AUTH_API_KEY=["\']?([^"\'\r\n]*)')) or ['']) | last }}
+  vars:
+    key_file: "{{ lookup('ansible.builtin.file', repo ~ '/' ~ lab_net.pdns_api_key_file, errors='ignore') | default('', true) }}"
+  when: lab_net.pdns_api | default('') | length > 0
+  no_log: true
+
+- name: Check the PowerDNS API key was found
+  ansible.builtin.assert:
+    that: pdns_api_key | length > 0
+    fail_msg: no PowerDNS API key – set PDNS_API_KEY or check PDNS_API_KEY_FILE in network.conf (or leave PDNS_API empty to skip DNS)
+    quiet: true
+  when: lab_net.pdns_api | default('') | length > 0
+
+- name: Check the required settings are present
+  ansible.builtin.assert:
+    that: lab[item] | length > 0
+    fail_msg: "Missing value for {{ item }} – set it in terraform.tfvars"
+    quiet: true
+  loop: [pm_endpoint, node_name, pool_id, datastore_id, cloud_image_file_id, vm_id_start, node_count, name_prefix]

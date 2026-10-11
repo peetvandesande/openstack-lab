@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+# Every node runs everything: control plane, networking, compute, storage
+# clients and monitoring. The service groups below are Kolla-Ansible's own.
+
+[control]
+{% for h in groups['openstack'] %}
+{{ h }} ansible_host={{ hostvars[h].ansible_host }} ansible_user={{ kolla_user }} ansible_become=true
+{% endfor %}
+
+[network:children]
+control
+
+[compute:children]
+control
+
+[storage:children]
+control
+
+[monitoring:children]
+control
+
+[deployment]
+localhost ansible_connection=local ansible_become=true
+
+{{ kolla_example_inventory | regex_search('(?ms)^\[[^\]\n]+:children\].*') }}

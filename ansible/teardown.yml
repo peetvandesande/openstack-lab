@@ -1,0 +1,229 @@
+# Removes everything the bootstrap created on the Proxmox host – the reverse of
+# ansible/bootstrap.yml.
+#
+#   - stops if any VM is still left in the pool: destroy the VMs first, with
+#     tofu destroy -var-file=secret.tfvars (this playbook does not)
+#   - removes the token, its permissions and the pool
+#   - removes the Terraform user, unless another project still uses it
+#   - removes the lab's zones from PowerDNS
+#   - removes the lab network: SNAT unit and SDN zone with its vnets
+#   - deletes the local state, inventory, secrets/ and secret.tfvars
+#
+# The cloud image is left alone, and so is the host preparation from
+# ansible/prepare-proxmox.yml, which is not specific to this lab.
+#
+# Usage (from the repository root):
+#   ansible-playbook ansible/teardown.yml [-e confirm=<pool>] [-e proxmox_target=user@host]
+
+- name: Read the lab settings
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir }}/.."
+    proxmox_target: ""
+  vars_prompt:
+    - name: confirm
+      prompt: This removes the lab from Proxmox. Type the pool name to continue
+      private: false
+  tasks:
+    - ansible.builtin.import_tasks: tasks/target.yml
+
+    - name: Confirm
+      ansible.builtin.assert:
+        that: confirm == lab.pool_id
+        fail_msg: Aborted.
+        quiet: true
+
+- name: Tear down Proxmox
+  hosts: proxmox
+  gather_facts: false
+  vars:
+    tf_user: terraform@pve
+    token_name: "{{ lab.pool_id }}"
+    image_storage: "{{ lab.cloud_image_file_id.split(':')[0] }}"
+    first_vmid: "{{ lab.vm_id_start | int }}"
+    vmids: "{{ range(first_vmid | int, (first_vmid | int) + (lab.node_count | int)) | list }}"
+    nat_service: "{{ lab.pool_id }}-nat.service"
+    nat_unit: /etc/systemd/system/{{ nat_service }}
+  tasks:
+    - name: List the VMs in the cluster
+      ansible.builtin.command: pvesh get /cluster/resources --type vm --output-format json
+      register: cluster_vms
+      changed_when: false
+
+    # Refuse to continue while the pool still holds VMs OpenTofu did not remove
+    - name: Check the pool is empty
+      ansible.builtin.assert:
+        that: left | length == 0
+        fail_msg: >-
+          pool {{ lab.pool_id }} still contains VMs: {{ left | map(attribute='vmid') | join(' ') }}.
+          Destroy them (tofu destroy, or qm destroy <id> --purge) and re-run.
+        quiet: true
+      vars:
+        left: "{{ cluster_vms.stdout | from_json | selectattr('pool', 'defined') | selectattr('pool', 'equalto', lab.pool_id) | list }}"
+
+    - name: List the user's tokens
+      ansible.builtin.command: pveum user token list {{ tf_user }} --output-format json
+      register: tokens
+      failed_when: false
+      changed_when: false
+
+    - name: Remove the token
+      ansible.builtin.command: pveum user token remove {{ tf_user }} {{ token_name }}
+      when: tokens.rc == 0 and token_name in (tokens.stdout | from_json | map(attribute='tokenid'))
+      changed_when: true
+
+    # Ignore entries that are already gone, e.g. /vms/<id>, which Proxmox drops
+    # when the VM is destroyed
+    - name: Revoke the permissions
+      ansible.builtin.command: pveum acl delete {{ item.path }} --users {{ tf_user }} --roles {{ item.roles }}
+      loop: "{{ revokes | from_json }}"
+      loop_control:
+        label: "{{ item.path }}"
+      failed_when: false
+      changed_when: false
+      vars:
+        revokes: |-
+          {% set o = [{'path': '/pool/' ~ lab.pool_id, 'roles': 'PVEVMAdmin,PVEPoolUser'},
+                      {'path': '/sdn/zones/' ~ lab_net.sdn_zone, 'roles': 'PVESDNUser'}] %}
+          {% for id in vmids %}{% set _ = o.append({'path': '/vms/' ~ id, 'roles': 'PVEVMAdmin'}) %}{% endfor %}
+          {{ o | to_json }}
+
+    - name: List the pools and users
+      ansible.builtin.command: pveum {{ item }} list --output-format json
+      loop: [pool, user]
+      register: pve_lists
+      changed_when: false
+
+    - name: Remove the pool
+      ansible.builtin.command: pveum pool delete {{ lab.pool_id }}
+      when: lab.pool_id in (pve_lists.results[0].stdout | from_json | map(attribute='poolid'))
+      changed_when: true
+
+    # The user and storage permissions may be shared with other projects using
+    # the same Terraform user; only remove them once no tokens are left
+    - name: Look for remaining tokens
+      ansible.builtin.command: pveum user token list {{ tf_user }} --output-format json
+      register: tokens_left
+      failed_when: false
+      changed_when: false
+
+    - name: Remove the user when no tokens are left
+      when:
+        - tf_user in (pve_lists.results[1].stdout | from_json | map(attribute='userid'))
+        - tokens_left.rc == 0 and (tokens_left.stdout | from_json | length) == 0
+      block:
+        - name: Revoke the shared permissions
+          ansible.builtin.command: pveum acl delete {{ item }} --users {{ tf_user }} --roles PVEDatastoreUser
+          loop:
+            - /storage/{{ lab.datastore_id }}
+            - /storage/{{ image_storage }}
+          failed_when: false
+          changed_when: false
+
+        - name: Delete the user
+          ansible.builtin.command: pveum user delete {{ tf_user }}
+          changed_when: true
+
+    - name: Report the kept user
+      ansible.builtin.debug:
+        msg: "user {{ tf_user }}: kept, other projects still have tokens"
+      when: tokens_left.rc == 0 and (tokens_left.stdout | from_json | length) > 0
+
+    - name: Remove the lab from DNS
+      ansible.builtin.include_tasks: tasks/dns.yml
+      vars:
+        dns_state: absent
+      when: lab_net.pdns_api | default('') | length > 0
+
+    # The lab network. Stopping the unit removes its SNAT rule
+    - name: Check for the NAT unit
+      ansible.builtin.stat:
+        path: "{{ nat_unit }}"
+      register: nat_stat
+
+    - name: Stop and remove the NAT unit
+      when: nat_stat.stat.exists
+      block:
+        - name: Disable and stop the NAT unit
+          ansible.builtin.systemd_service:
+            name: "{{ nat_service }}"
+            enabled: false
+            state: stopped
+
+        - name: Delete the NAT unit
+          ansible.builtin.file:
+            path: "{{ nat_unit }}"
+            state: absent
+
+        - name: Reload systemd
+          ansible.builtin.systemd_service:
+            daemon_reload: true
+
+    - name: Look for the SDN zone
+      ansible.builtin.command: pvesh get /cluster/sdn/zones/{{ lab_net.sdn_zone }}
+      register: zone_get
+      failed_when: false
+      changed_when: false
+
+    - name: Remove the SDN zone with its vnets
+      when: zone_get.rc == 0
+      block:
+        - name: List the vnets
+          ansible.builtin.command: pvesh get /cluster/sdn/vnets --output-format json
+          register: all_vnets
+          changed_when: false
+
+        - name: List the subnets
+          ansible.builtin.command: pvesh get /cluster/sdn/vnets/{{ item }}/subnets --output-format json
+          loop: "{{ zone_vnets }}"
+          register: subnet_lists
+          changed_when: false
+          vars:
+            zone_vnets: "{{ all_vnets.stdout | from_json | selectattr('zone', 'equalto', lab_net.sdn_zone) | map(attribute='vnet') | list }}"
+
+        - name: Delete the subnets
+          ansible.builtin.command: pvesh delete /cluster/sdn/vnets/{{ item.vnet }}/subnets/{{ item.subnet }}
+          loop: "{{ subnets | from_json }}"
+          loop_control:
+            label: "{{ item.vnet }}/{{ item.subnet }}"
+          changed_when: true
+          vars:
+            subnets: |-
+              {% set o = [] %}
+              {% for r in subnet_lists.results %}{% for s in (r.stdout | from_json) %}{% set _ = o.append({'vnet': r.item, 'subnet': s.subnet}) %}{% endfor %}{% endfor %}
+              {{ o | to_json }}
+
+        - name: Delete the vnets
+          ansible.builtin.command: pvesh delete /cluster/sdn/vnets/{{ item.item }}
+          loop: "{{ subnet_lists.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+          changed_when: true
+
+        - name: Delete the zone
+          ansible.builtin.command: pvesh delete /cluster/sdn/zones/{{ lab_net.sdn_zone }}
+          changed_when: true
+
+        - name: Apply the SDN configuration
+          ansible.builtin.command: pvesh set /cluster/sdn
+          changed_when: true
+
+- name: Remove the local files
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir }}/.."
+  tasks:
+    # Only make sense while the lab exists
+    - name: Delete the local state, inventory, secrets and secret.tfvars
+      ansible.builtin.file:
+        path: "{{ repo }}/{{ item }}"
+        state: absent
+      loop: [terraform.tfstate, terraform.tfstate.backup, ansible/inventory/hosts.yml, secrets, secret.tfvars]
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: The lab has been removed from {{ hostvars['proxmox'].ansible_host }}.

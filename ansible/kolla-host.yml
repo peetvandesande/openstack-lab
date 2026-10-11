@@ -1,0 +1,139 @@
+# Turns the first node into the deployment host – Kolla-Ansible, its
+# configuration in /etc/kolla, the OpenStack clients – and prepares all
+# nodes for the containers (kolla-ansible bootstrap-servers, which also
+# installs Docker). Imported by site.yml; can be run on its own.
+
+- name: Give the deployment host SSH access to every node
+  hosts: openstack
+  gather_facts: false
+  tasks:
+    - name: Create the deployment user's key
+      ansible.builtin.user:
+        name: "{{ kolla_user }}"
+        generate_ssh_key: true
+        ssh_key_type: ed25519
+      register: deploy_key
+      when: inventory_hostname == deploy_host
+
+    - name: Authorise the key on every node
+      ansible.posix.authorized_key:
+        user: "{{ kolla_user }}"
+        key: "{{ hostvars[deploy_host].deploy_key.ssh_public_key }}"
+
+- name: Set up the deployment host
+  hosts: openstack[0]
+  gather_facts: true
+  tasks:
+    - name: Install the build dependencies
+      ansible.builtin.apt:
+        name: [git, python3-venv, python3-dev, libffi-dev, gcc, libssl-dev, libdbus-glib-1-dev]
+
+    - name: Create the virtualenv directory
+      ansible.builtin.file:
+        path: "{{ kolla_venv | dirname }}"
+        state: directory
+        owner: "{{ kolla_user }}"
+        mode: "0755"
+
+    - name: Create the configuration directory
+      ansible.builtin.file:
+        path: /etc/kolla
+        state: directory
+        owner: "{{ kolla_user }}"
+        mode: "0755"
+
+    - name: Install the Python packages
+      become: true
+      become_user: "{{ kolla_user }}"
+      block:
+        - name: Install Kolla-Ansible {{ openstack_release }}
+          ansible.builtin.pip:
+            name: "{{ kolla_ansible_source }}"
+            virtualenv: "{{ kolla_venv }}"
+            virtualenv_command: python3 -m venv
+
+        - name: Install the OpenStack clients
+          ansible.builtin.pip:
+            name:
+              - python-openstackclient
+              - python-octaviaclient
+              - python-designateclient
+              - python-heatclient
+              - python-barbicanclient
+              - gnocchiclient
+              - python-cloudkittyclient
+              - openstacksdk
+            extra_args: -c https://releases.openstack.org/constraints/upper/{{ openstack_release }}
+            virtualenv: "{{ kolla_venv }}"
+
+        - name: Install the Ansible collections Kolla-Ansible needs
+          ansible.builtin.command: "{{ kolla_venv }}/bin/kolla-ansible install-deps"
+          environment:
+            PATH: "{{ kolla_venv }}/bin:{{ ansible_env.PATH }}"
+          changed_when: false
+
+    - name: Find the Kolla-Ansible examples
+      ansible.builtin.find:
+        paths: "{{ kolla_venv }}/share/kolla-ansible"
+        patterns: [passwords.yml, multinode]
+        recurse: true
+      register: examples
+
+    - name: Read the example inventory
+      ansible.builtin.slurp:
+        src: "{{ examples.files | map(attribute='path') | select('search', '/inventory/multinode$') | first }}"
+      register: example_inventory
+
+    - name: Write globals.yml and the inventory
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: /etc/kolla/{{ item.dest }}
+        owner: "{{ kolla_user }}"
+        mode: "0644"
+      loop:
+        - { src: globals.yml.j2, dest: globals.yml }
+        - { src: multinode.j2, dest: multinode }
+      vars:
+        kolla_example_inventory: "{{ example_inventory.content | b64decode }}"
+
+    # kolla-genpwd only fills in empty entries, so re-running keeps the
+    # existing passwords
+    - name: Create passwords.yml
+      ansible.builtin.copy:
+        src: "{{ examples.files | map(attribute='path') | select('search', '/passwords.yml$') | first }}"
+        dest: /etc/kolla/passwords.yml
+        remote_src: true
+        force: false
+        owner: "{{ kolla_user }}"
+        mode: "0600"
+
+    - name: Generate the passwords
+      ansible.builtin.command: "{{ kolla_venv }}/bin/kolla-genpwd -p /etc/kolla/passwords.yml"
+      become: true
+      become_user: "{{ kolla_user }}"
+      changed_when: false
+
+    - name: Check for the certificates
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/kolla/certificates/ca/root.crt
+        - /etc/kolla/config/octavia/server_ca.cert.pem
+      register: certs
+
+    - name: Create the lab CA and the public endpoint certificate
+      ansible.builtin.include_tasks: tasks/kolla.yml
+      vars:
+        kolla_action: certificates
+      when: not certs.results[0].stat.exists
+
+    - name: Create the Octavia certificates
+      ansible.builtin.include_tasks: tasks/kolla.yml
+      vars:
+        kolla_action: octavia-certificates
+      when: enable_octavia and not certs.results[1].stat.exists
+
+    - name: Prepare the nodes for Kolla (Docker, kernel settings, /etc/hosts)
+      ansible.builtin.include_tasks: tasks/kolla.yml
+      vars:
+        kolla_action: bootstrap-servers

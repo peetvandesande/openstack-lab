@@ -1,0 +1,36 @@
+# {{ ansible_managed }}
+# NICs are renamed by MAC address to the network they are on. The default
+# route is on mgmt; traffic from the API network (and its VIP) leaves through
+# api, so replies go back the way requests came in
+network:
+  version: 2
+  ethernets:
+{% for name, nic in nics.items() %}
+    {{ name }}:
+      match:
+        macaddress: "{{ nic.mac }}"
+      set-name: {{ name }}
+{% if nic.address %}
+      addresses: [{{ nic.address }}]
+{% else %}
+      dhcp4: false
+      dhcp6: false
+      link-local: []
+{% endif %}
+{% if name == 'mgmt' %}
+      routes:
+        - to: default
+          via: {{ lab_net.mgmt_gateway }}
+      nameservers:
+        search: [{{ lab_net.domain }}]
+        addresses: [{{ lab_net.dns_servers.split() | join(', ') }}]
+{% elif name == 'api' %}
+      routes:
+        - to: default
+          via: {{ lab_net.api_gateway }}
+          table: 100
+      routing-policy:
+        - from: {{ lab_net.api_subnet }}
+          table: 100
+{% endif %}
+{% endfor %}

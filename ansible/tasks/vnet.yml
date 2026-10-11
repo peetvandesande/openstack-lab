@@ -1,0 +1,45 @@
+# One lab vnet in the lab's SDN zone (item: name, alias, subnet, gateway).
+# With a gateway, the vnet gets a subnet and the host routes it; without one
+# it is a plain isolated bridge.
+- name: "{{ item.name }}: look up the vnet"
+  ansible.builtin.command: pvesh get /cluster/sdn/vnets/{{ item.name }} --output-format json
+  register: vnet_get
+  failed_when: false
+  changed_when: false
+
+- name: "{{ item.name }}: check it belongs to zone {{ lab_net.sdn_zone }}"
+  ansible.builtin.assert:
+    that: vnet_get.rc != 0 or (vnet_get.stdout | from_json).zone == lab_net.sdn_zone
+    fail_msg: vnet {{ item.name }} already exists in another zone – rename it in network.conf
+    quiet: true
+
+- name: "{{ item.name }}: create vnet"
+  ansible.builtin.command: pvesh create /cluster/sdn/vnets --vnet {{ item.name }} --zone {{ lab_net.sdn_zone }} --alias '{{ item.alias }}'
+  when: vnet_get.rc != 0
+  register: vnet_create
+  changed_when: true
+
+- name: "{{ item.name }}: look up the subnet"
+  ansible.builtin.command: pvesh get /cluster/sdn/vnets/{{ item.name }}/subnets/{{ lab_net.sdn_zone }}-{{ item.subnet | replace('/', '-') }}
+  register: subnet_get
+  failed_when: false
+  changed_when: false
+  when: item.gateway | length > 0
+
+- name: "{{ item.name }}: create subnet {{ item.subnet }}"
+  ansible.builtin.command: >-
+    pvesh create /cluster/sdn/vnets/{{ item.name }}/subnets
+    --type subnet --subnet {{ item.subnet }} --gateway {{ item.gateway }}
+  register: subnet_create
+  when: item.gateway | length > 0 and subnet_get.rc != 0
+  changed_when: true
+
+# Configured but never applied, e.g. after an interrupted run
+- name: "{{ item.name }}: check the bridge is up"
+  ansible.builtin.stat:
+    path: /sys/class/net/{{ item.name }}
+  register: bridge_up
+
+- name: "{{ item.name }}: record changes"
+  ansible.builtin.set_fact:
+    sdn_changed: "{{ sdn_changed or vnet_create is changed or subnet_create is changed or not bridge_up.stat.exists }}"

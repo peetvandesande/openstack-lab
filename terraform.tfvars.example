@@ -1,0 +1,14 @@
+pm_endpoint = "https://lenora.home:8006/"
+node_name   = "lenora"
+vm_id_start = 9201
+
+# Optional overrides
+# pool_id             = "openstack-lab"
+# name_prefix         = "os"
+# cloud_image_file_id = "local:import/noble-server-cloudimg-amd64.qcow2"
+# ssh_public_key_file = "~/.ssh/id_ed25519.pub"
+datastore_id = "hddpool"
+cores        = 16
+memory_mb    = 65536
+os_disk_gb   = 100
+osd_disk_gb  = 250

@@ -1,0 +1,16 @@
+# Reads the settings and registers the Proxmox host as `proxmox`. Runs on the
+# control node; needs `repo` and `proxmox_target` to be set.
+- ansible.builtin.import_tasks: settings.yml
+
+- name: Add the Proxmox host
+  ansible.builtin.add_host:
+    name: proxmox
+    groups: proxmox
+    ansible_host: "{{ target.split('@')[-1] }}"
+    ansible_user: "{{ target.split('@')[0] if '@' in target else 'root' }}"
+    lab: "{{ lab }}"
+    lab_net: "{{ lab_net }}"
+    pdns_api_key: "{{ pdns_api_key | default('') }}"
+    repo: "{{ repo }}"
+  vars:
+    target: "{{ proxmox_target or ('root@' ~ (lab.pm_endpoint | regex_replace('^https?://([^:/]+).*', '\\1'))) }}"

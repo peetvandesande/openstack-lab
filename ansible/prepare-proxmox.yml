@@ -1,0 +1,70 @@
+# One-time preparation of a Proxmox host for nested, routed labs like this
+# one. Safe to re-run. Nothing here is specific to this lab, and
+# ansible/teardown.yml leaves it all in place.
+#
+#   - enables nested virtualisation
+#   - turns on IPv4 forwarding, so the host routes between the LAN and the lab
+#
+# Usage (from the repository root):
+#   ansible-playbook ansible/prepare-proxmox.yml [-e proxmox_target=user@host]
+
+- name: Read the lab settings
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir }}/.."
+    proxmox_target: ""
+  tasks:
+    - ansible.builtin.import_tasks: tasks/target.yml
+
+- name: Prepare Proxmox
+  hosts: proxmox
+  gather_facts: false
+  tasks:
+    - name: Find the KVM module
+      ansible.builtin.shell: grep -qw vmx /proc/cpuinfo && echo kvm_intel || (grep -qw svm /proc/cpuinfo && echo kvm_amd)
+      register: kvm_module
+      changed_when: false
+
+    - name: Read the nested virtualisation setting
+      ansible.builtin.command: cat /sys/module/{{ kvm_module.stdout }}/parameters/nested
+      register: nested
+      changed_when: false
+
+    - name: Enable nested virtualisation
+      when: nested.stdout is not match('^(Y|1)$')
+      block:
+        - name: Configure the module option
+          ansible.builtin.copy:
+            dest: /etc/modprobe.d/kvm-nested.conf
+            content: "options {{ kvm_module.stdout }} nested=1\n"
+            mode: "0644"
+
+        - name: List running VMs
+          ansible.builtin.shell: qm list | grep -cw running || true
+          register: running
+          changed_when: false
+
+        # The module can only be reloaded while no VM is using it
+        - name: Reload the module
+          ansible.builtin.shell: modprobe -r {{ kvm_module.stdout }} && modprobe {{ kvm_module.stdout }}
+          when: running.stdout | int == 0
+          changed_when: true
+
+        - name: Ask for a reboot
+          ansible.builtin.debug:
+            msg: nested virtualisation is configured, but VMs are running – reboot the host to enable it
+          when: running.stdout | int > 0
+
+    # SDN only enables forwarding on its own vnets; traffic from the LAN arrives
+    # on the host's main bridge
+    - name: Turn on IPv4 forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        sysctl_file: /etc/sysctl.d/90-ip-forward.conf
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "Next: ansible-playbook ansible/bootstrap.yml"

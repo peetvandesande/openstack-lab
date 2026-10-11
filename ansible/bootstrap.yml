@@ -1,0 +1,348 @@
+# Sets up everything this lab needs on a Proxmox host. Safe to re-run.
+#
+#   - checks the host prerequisites from ansible/prepare-proxmox.yml, and
+#     that no other lab is using the address range
+#   - builds the lab network: an SDN zone with one vnet per network in
+#     network.conf, and the SNAT unit if LAB_SNAT=yes
+#   - registers the lab's names in PowerDNS (openstack.home and the reverse
+#     zones), through the API
+#   - downloads the Ubuntu cloud image the nodes are built from
+#   - creates the resource pool and a Terraform API user and token
+#   - limits the token to that pool, the datastore, the image storage and the
+#     lab's SDN zone
+#   - checks the VMIDs are free
+#   - writes the new token to secret.tfvars
+#
+# Settings are read from terraform.tfvars, falling back to the defaults in
+# variables.tf, and from network.conf.
+#
+# Usage (from the repository root):
+#   ansible-playbook ansible/bootstrap.yml [-e rotate_token=true] [-e proxmox_target=user@host]
+#   proxmox_target defaults to root@<host from pm_endpoint>
+
+- name: Read the lab settings
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir }}/.."
+    proxmox_target: ""
+  tasks:
+    - ansible.builtin.import_tasks: tasks/target.yml
+
+- name: Bootstrap Proxmox
+  hosts: proxmox
+  gather_facts: false
+  vars:
+    rotate_token: false
+    tf_user: terraform@pve
+    token_name: "{{ lab.pool_id }}"
+    image_storage: "{{ lab.cloud_image_file_id.split(':')[0] }}"
+    first_vmid: "{{ lab.vm_id_start | int }}"
+    vmids: "{{ range(first_vmid | int, (first_vmid | int) + (lab.node_count | int)) | list }}"
+    nat_service: "{{ lab.pool_id }}-nat.service"
+    nat_unit: /etc/systemd/system/{{ nat_service }}
+  tasks:
+    - name: Bootstrapping {{ inventory_hostname }}
+      ansible.builtin.debug:
+        msg: "{{ ansible_host }} (zone {{ lab_net.sdn_zone }}, pool {{ lab.pool_id }}, user {{ tf_user }}, token {{ token_name }})"
+
+    # Host prerequisites, set up once by prepare-proxmox.yml
+    - name: Read the nested virtualisation and forwarding settings
+      ansible.builtin.shell: |
+        cat /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null || true
+        echo "forward=$(sysctl -n net.ipv4.ip_forward)"
+      register: prereqs
+      changed_when: false
+
+    - name: Check the host prerequisites
+      ansible.builtin.assert:
+        that:
+          - prereqs.stdout_lines | select('match', '^(Y|1)$') | list | length > 0
+          - "'forward=1' in prereqs.stdout_lines"
+        fail_msg: nested virtualisation or IPv4 forwarding is off – run ansible/prepare-proxmox.yml first
+        quiet: true
+
+    # Other labs (nutanix-lab) use the same range; only one can be built at a
+    # time
+    - name: Look for other SDN subnets in the lab range
+      ansible.builtin.shell: |
+        python3 - <<'EOF'
+        import ipaddress, json, subprocess
+        def get(path):
+            return json.loads(subprocess.check_output(["pvesh", "get", path, "--output-format", "json"]))
+        lab = ipaddress.ip_network("{{ lab_net.lab_range }}")
+        for vnet in get("/cluster/sdn/vnets"):
+            if vnet.get("zone") == "{{ lab_net.sdn_zone }}":
+                continue
+            for subnet in get("/cluster/sdn/vnets/%s/subnets" % vnet["vnet"]):
+                cidr = subnet.get("cidr") or "/".join(subnet["subnet"].rsplit("-", 2)[1:])
+                if ipaddress.ip_network(cidr).overlaps(lab):
+                    print("%s/%s %s" % (vnet["zone"], vnet["vnet"], cidr))
+        EOF
+      register: overlaps
+      changed_when: false
+
+    - name: Check no other lab is built
+      ansible.builtin.assert:
+        that: overlaps.stdout | length == 0
+        fail_msg: "{{ lab_net.lab_range }} is in use by another SDN zone ({{ overlaps.stdout_lines | join(', ') }}) – tear that lab down first"
+        quiet: true
+
+    # No DHCP and no per-subnet snat: every node address is static, and NAT
+    # (if any) is done once for the whole lab range
+    - name: Look up the SDN zone
+      ansible.builtin.command: pvesh get /cluster/sdn/zones/{{ lab_net.sdn_zone }}
+      register: zone_get
+      failed_when: false
+      changed_when: false
+
+    - name: Create the SDN zone
+      ansible.builtin.command: pvesh create /cluster/sdn/zones --zone {{ lab_net.sdn_zone }} --type simple --ipam pve
+      when: zone_get.rc != 0
+      changed_when: true
+
+    - name: Start tracking SDN changes
+      ansible.builtin.set_fact:
+        sdn_changed: "{{ zone_get.rc != 0 }}"
+
+    - name: Build the lab vnets
+      ansible.builtin.include_tasks: tasks/vnet.yml
+      loop:
+        - { name: "{{ lab_net.mgmt_vnet }}", alias: OpenStack management, subnet: "{{ lab_net.mgmt_subnet }}", gateway: "{{ lab_net.mgmt_gateway }}" }
+        - { name: "{{ lab_net.api_vnet }}", alias: OpenStack public API, subnet: "{{ lab_net.api_subnet }}", gateway: "{{ lab_net.api_gateway }}" }
+        - { name: "{{ lab_net.storage_vnet }}", alias: Ceph public, subnet: "{{ lab_net.storage_subnet }}", gateway: "" }
+        - { name: "{{ lab_net.replication_vnet }}", alias: Ceph cluster, subnet: "{{ lab_net.replication_subnet }}", gateway: "" }
+        - { name: "{{ lab_net.tunnel_vnet }}", alias: OpenStack tunnels, subnet: "{{ lab_net.tunnel_subnet }}", gateway: "" }
+        - { name: "{{ lab_net.provider_vnet }}", alias: OpenStack provider, subnet: "{{ lab_net.provider_subnet }}", gateway: "{{ lab_net.provider_gateway }}" }
+
+    - name: Apply the SDN configuration
+      ansible.builtin.command: pvesh set /cluster/sdn
+      when: sdn_changed
+      changed_when: true
+
+    - name: Optional SNAT for the lab range
+      when: lab_net.lab_snat | default('no') | bool
+      block:
+        - name: Find the default route
+          ansible.builtin.command: ip -4 route get 1.1.1.1
+          register: default_route
+          changed_when: false
+
+        - name: Note the uplink
+          ansible.builtin.set_fact:
+            uplink: "{{ default_route.stdout | regex_search('dev (\\S+)', '\\1') | first }}"
+            uplink_ip: "{{ default_route.stdout | regex_search('src (\\S+)', '\\1') | first }}"
+
+        - name: Read any existing NAT unit
+          ansible.builtin.slurp:
+            src: "{{ nat_unit }}"
+          register: nat_old
+          failed_when: false
+
+        - name: Install the NAT unit
+          vars:
+            nat_rule: POSTROUTING -s {{ lab_net.lab_range }} -o {{ uplink }} -j SNAT --to-source {{ uplink_ip }}
+            nat_content: |
+              [Unit]
+              Description=SNAT for the OpenStack lab ({{ lab_net.lab_range }})
+              Wants=network-online.target
+              After=network-online.target
+
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              ExecStart=/usr/sbin/iptables -w -t nat -A {{ nat_rule }}
+              ExecStop=-/usr/sbin/iptables -w -t nat -D {{ nat_rule }}
+
+              [Install]
+              WantedBy=multi-user.target
+            nat_stale: "{{ nat_old.content is defined and (nat_old.content | b64decode) != nat_content }}"
+          block:
+            # Stop a previous version first, so that it removes its own rule
+            - name: Stop the previous NAT unit
+              ansible.builtin.systemd_service:
+                name: "{{ nat_service }}"
+                state: stopped
+              when: nat_stale
+
+            - name: Write the NAT unit
+              ansible.builtin.copy:
+                dest: "{{ nat_unit }}"
+                content: "{{ nat_content }}"
+                mode: "0644"
+
+            - name: Enable and start the NAT unit
+              ansible.builtin.systemd_service:
+                name: "{{ nat_service }}"
+                enabled: true
+                state: started
+                daemon_reload: true
+
+    - name: Remove the NAT unit when LAB_SNAT is off
+      when: not (lab_net.lab_snat | default('no') | bool)
+      block:
+        - name: Check for the NAT unit
+          ansible.builtin.stat:
+            path: "{{ nat_unit }}"
+          register: nat_stat
+
+        - name: Disable and stop the NAT unit
+          ansible.builtin.systemd_service:
+            name: "{{ nat_service }}"
+            enabled: false
+            state: stopped
+          when: nat_stat.stat.exists
+
+        - name: Delete the NAT unit
+          ansible.builtin.file:
+            path: "{{ nat_unit }}"
+            state: absent
+
+    - name: Report the routing
+      ansible.builtin.debug:
+        msg: >-
+          {{ lab_net.lab_range }} is routed by {{ ansible_host }};
+          {{ 'the host source-NATs it' if lab_net.lab_snat | default('no') | bool else 'the LAN router must route it here and NAT it' }}
+
+    # The lab's names in the LAN's DNS, before the nodes exist: they resolve
+    # each other, and the public endpoint, from first boot
+    - name: Register the lab in DNS
+      ansible.builtin.include_tasks: tasks/dns.yml
+      vars:
+        dns_state: present
+      when: lab_net.pdns_api | default('') | length > 0
+
+    # The cloud image, as an import volume the VMs' system disks are created from
+    - name: Find the image path
+      ansible.builtin.command: pvesm path {{ lab.cloud_image_file_id }}
+      register: image_path
+      changed_when: false
+
+    - name: Create the image directory
+      ansible.builtin.file:
+        path: "{{ image_path.stdout | dirname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download the cloud image
+      ansible.builtin.get_url:
+        url: "{{ lab.cloud_image_url }}"
+        dest: "{{ image_path.stdout }}"
+        checksum: "sha256:{{ lab.cloud_image_url | dirname }}/SHA256SUMS"
+        mode: "0644"
+
+    - name: List the pools and users
+      ansible.builtin.command: pveum {{ item }} list --output-format json
+      loop: [pool, user]
+      register: pve_lists
+      changed_when: false
+
+    - name: Create the pool
+      ansible.builtin.command: pveum pool add {{ lab.pool_id }} --comment "Managed by OpenTofu"
+      when: lab.pool_id not in (pve_lists.results[0].stdout | from_json | map(attribute='poolid'))
+      changed_when: true
+
+    - name: Create the user
+      ansible.builtin.command: pveum user add {{ tf_user }} --comment Terraform
+      when: tf_user not in (pve_lists.results[1].stdout | from_json | map(attribute='userid'))
+      changed_when: true
+
+    # PVEPoolUser lets the provider read the pool's members; without it every
+    # plan wants to put the VMs back into the pool. A new VM only joins the
+    # pool at the end of creation, so the options set while creating it are
+    # checked against /vms/<id> rather than the pool
+    - name: Grant the permissions on the pool, storage and SDN zone
+      ansible.builtin.command: pveum acl modify {{ item.path }} --users {{ tf_user }} --roles {{ item.roles }}
+      loop:
+        - { path: "/pool/{{ lab.pool_id }}", roles: "PVEVMAdmin,PVEPoolUser" }
+        - { path: "/storage/{{ lab.datastore_id }}", roles: PVEDatastoreUser }
+        - { path: "/storage/{{ image_storage }}", roles: PVEDatastoreUser }
+        - { path: "/sdn/zones/{{ lab_net.sdn_zone }}", roles: PVESDNUser }
+      loop_control:
+        label: "{{ item.path }}"
+      changed_when: false
+
+    - name: Grant the permissions on the VMIDs
+      ansible.builtin.command: pveum acl modify /vms/{{ item }} --users {{ tf_user }} --roles PVEVMAdmin
+      loop: "{{ vmids }}"
+      changed_when: false
+
+    - name: List the VMs in the cluster
+      ansible.builtin.command: pvesh get /cluster/resources --type vm --output-format json
+      register: cluster_vms
+      changed_when: false
+
+    - name: Check the VMIDs are free
+      ansible.builtin.assert:
+        that: clashes | length == 0
+        fail_msg: "VMID(s) {{ clashes | map(attribute='vmid') | join(', ') }} already used by a VM outside pool {{ lab.pool_id }} – change vm_id_start"
+        success_msg: "VMIDs {{ vmids | first }}-{{ vmids | last }}: ok"
+      vars:
+        clashes: |-
+          {{ cluster_vms.stdout | from_json
+             | selectattr('vmid', 'in', vmids)
+             | rejectattr('pool', 'equalto', lab.pool_id) | list }}
+
+    - name: List the user's tokens
+      ansible.builtin.command: pveum user token list {{ tf_user }} --output-format json
+      register: tokens
+      changed_when: false
+
+    - name: Look at the token
+      ansible.builtin.set_fact:
+        token_exists: "{{ token_name in (tokens.stdout | from_json | map(attribute='tokenid')) }}"
+
+    - name: Report the existing token
+      ansible.builtin.debug:
+        msg: "token {{ token_name }}: exists (secret cannot be shown again; use -e rotate_token=true for a new one)"
+      when: token_exists and not rotate_token
+
+    - name: Create the token
+      when: not token_exists or rotate_token
+      block:
+        - name: Remove the old token
+          ansible.builtin.command: pveum user token remove {{ tf_user }} {{ token_name }}
+          when: token_exists
+          changed_when: true
+
+        - name: Add the token
+          ansible.builtin.command: pveum user token add {{ tf_user }} {{ token_name }} --privsep 0 --comment Terraform --output-format json
+          register: token_add
+          changed_when: true
+          no_log: true
+
+        - name: Keep the token line
+          ansible.builtin.set_fact:
+            token_line: >-
+              pm_api_token = "{{ (token_add.stdout | from_json)['full-tokenid'] }}={{ (token_add.stdout | from_json).value }}"
+          no_log: true
+
+- name: Write the token to secret.tfvars
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir }}/.."
+    token_line: "{{ hostvars['proxmox'].token_line | default('') }}"
+  tasks:
+    - name: Create secret.tfvars
+      ansible.builtin.copy:
+        dest: "{{ repo }}/secret.tfvars"
+        content: ""
+        force: false
+        mode: "0600"
+      when: token_line | length > 0
+
+    - name: Write the token
+      ansible.builtin.lineinfile:
+        path: "{{ repo }}/secret.tfvars"
+        regexp: "^pm_api_token"
+        line: "{{ token_line }}"
+        mode: "0600"
+      when: token_line | length > 0
+      no_log: true
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: "{{ 'Token written to secret.tfvars. ' if token_line | length > 0 else '' }}Next: tofu init && tofu apply -var-file=secret.tfvars"

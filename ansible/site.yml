@@ -1,0 +1,22 @@
+# Builds OpenStack on the nodes OpenTofu created, in order. Each step can
+# also be run on its own. Takes an hour or more, most of it in the
+# Kolla-Ansible deploy; the deploy logs are in ~ubuntu/kolla-logs on the
+# first node.
+#
+# Usage (from the repository root, after tofu apply):
+#   ansible-playbook ansible/site.yml
+
+- name: Base configuration of the nodes
+  ansible.builtin.import_playbook: nodes.yml
+
+- name: Deployment host and Docker
+  ansible.builtin.import_playbook: kolla-host.yml
+
+- name: Ceph
+  ansible.builtin.import_playbook: ceph.yml
+
+- name: OpenStack
+  ansible.builtin.import_playbook: openstack.yml
+
+- name: Day-2 configuration
+  ansible.builtin.import_playbook: cloud.yml

@@ -1,0 +1,67 @@
+# OpenStack and Ceph settings. The addresses come from network.conf, through
+# the inventory OpenTofu writes (lab_net).
+
+# The first node is also the deployment host: Kolla-Ansible and the
+# OpenStack clients are installed there, and cephadm runs from it
+deploy_host: "{{ groups['openstack'] | first }}"
+
+openstack_release: "2026.1"
+kolla_ansible_source: git+https://opendev.org/openstack/kolla-ansible@stable/{{ openstack_release }}
+kolla_venv: /opt/kolla/venv
+kolla_user: ubuntu
+
+ceph_image: quay.io/ceph/ceph:v19
+
+# Derived from network.conf
+internal_vip: "{{ vips.internal }}"
+external_vip: "{{ vips.external }}"
+public_fqdn: api.{{ lab_net.domain }}
+mgmt_ip: "{{ ansible_host }}"
+storage_ip: "{{ nics.stor.address.split('/')[0] }}"
+
+# Optional services. Everything a small public cloud offers by default is on:
+# load balancers, DNS, secrets, object storage, orchestration, metering and
+# rating, monitoring and central logging
+enable_octavia: true
+enable_designate: true
+enable_barbican: true
+enable_ceph_rgw: true
+enable_metering: true      # Ceilometer, Gnocchi and CloudKitty
+enable_monitoring: true    # Prometheus, Alertmanager and Grafana
+enable_central_logging: true
+
+# Day-2 configuration (ansible/cloud.yml)
+public_network: public
+
+flavors:
+  - { name: t1.tiny, vcpus: 1, ram: 512, disk: 5 }
+  - { name: gp1.small, vcpus: 1, ram: 2048, disk: 20 }
+  - { name: gp1.medium, vcpus: 2, ram: 4096, disk: 40 }
+  - { name: gp1.large, vcpus: 4, ram: 8192, disk: 80 }
+  - { name: c1.medium, vcpus: 4, ram: 4096, disk: 40 }
+  - { name: m1.medium, vcpus: 2, ram: 8192, disk: 40 }
+
+# Converted to raw before upload, so Ceph can clone them copy-on-write
+images:
+  - name: cirros-0.6.3
+    url: https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img
+    os_distro: cirros
+  - name: ubuntu-24.04
+    url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+    os_distro: ubuntu
+  - name: debian-13
+    url: https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2
+    os_distro: debian
+
+# Octavia's test amphora image. Fine for a lab; build your own with
+# octavia-diskimage-create for anything else
+amphora_image_url: https://tarballs.opendev.org/openstack/octavia/test-images/test-only-amphora-x64-haproxy-ubuntu-noble.qcow2
+
+# A customer, set up the way a provider would onboard one: its own domain,
+# project, user, quota, network and router
+customer:
+  domain: customers
+  project: demo
+  user: demo
+  network_cidr: 10.10.0.0/24
+  quota: { instances: 10, cores: 20, ram: 40960, volumes: 10, gigabytes: 500, floating_ips: 5 }

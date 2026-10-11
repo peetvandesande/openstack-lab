@@ -1,0 +1,190 @@
+# Ceph cluster with cephadm, on the same nodes: a monitor, a manager, two
+# OSDs and an RGW on every node; client traffic on the storage network,
+# replication on its own. Creates the pools and client keys OpenStack uses
+# and writes them into /etc/kolla/config. Imported by site.yml after
+# kolla-host.yml, which installs Docker.
+
+- name: Deploy Ceph
+  hosts: openstack[0]
+  gather_facts: false
+  vars:
+    ceph_hosts: "{{ groups['openstack'] }}"
+    expected_osds: "{{ ceph_hosts | length * osd_disk_count | int }}"
+    dashboard_password: "{{ lookup('ansible.builtin.password', playbook_dir ~ '/../secrets/ceph-dashboard-password', chars=['ascii_letters', 'digits'], length=20) }}"
+    rbd_pools: [volumes, images, vms, backups]
+    client_keys:
+      glance: >-
+        mon 'profile rbd' osd 'profile rbd pool=images' mgr 'profile rbd pool=images'
+      cinder: >-
+        mon 'profile rbd'
+        osd 'profile rbd pool=volumes, profile rbd pool=vms, profile rbd-read-only pool=images'
+        mgr 'profile rbd pool=volumes, profile rbd pool=vms'
+      cinder-backup: >-
+        mon 'profile rbd' osd 'profile rbd pool=backups' mgr 'profile rbd pool=backups'
+      gnocchi: >-
+        mon 'allow r' osd 'allow rwx pool=gnocchi'
+    # Which files each Kolla service gets, under /etc/kolla/config
+    kolla_ceph_files:
+      - { dir: glance, keys: [glance] }
+      - { dir: cinder, keys: [] }
+      - { dir: cinder/cinder-volume, keys: [cinder] }
+      - { dir: cinder/cinder-backup, keys: [cinder, cinder-backup] }
+      - { dir: nova, keys: [cinder] }
+      - { dir: gnocchi, keys: [gnocchi] }
+  tasks:
+    # --no-install-recommends: cephadm recommends podman, but Kolla's Docker
+    # is used instead
+    - name: Install cephadm and the Ceph CLI
+      ansible.builtin.apt:
+        name: [cephadm, ceph-common]
+        install_recommends: false
+
+    - name: Check for an existing cluster
+      ansible.builtin.stat:
+        path: /etc/ceph/ceph.conf
+      register: ceph_conf
+
+    - name: Bootstrap the cluster
+      ansible.builtin.command: >-
+        cephadm --image {{ ceph_image }} bootstrap
+        --mon-ip {{ storage_ip }}
+        --cluster-network {{ lab_net.replication_subnet }}
+        --ssh-user root
+        --skip-monitoring-stack
+        --initial-dashboard-user admin
+        --initial-dashboard-password {{ dashboard_password }}
+        --dashboard-password-noupdate
+      when: not ceph_conf.stat.exists
+      changed_when: true
+      no_log: true
+
+    - name: Read the orchestrator's SSH key
+      ansible.builtin.slurp:
+        src: /etc/ceph/ceph.pub
+      register: ceph_pub
+
+    - name: Authorise the orchestrator on every node
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ ceph_pub.content | b64decode }}"
+      delegate_to: "{{ item }}"
+      loop: "{{ ceph_hosts }}"
+
+    - name: List the Ceph hosts
+      ansible.builtin.command: ceph orch host ls --format json
+      register: orch_hosts
+      changed_when: false
+
+    - name: Add the other nodes
+      ansible.builtin.command: >-
+        ceph orch host add {{ item }} {{ hostvars[item].storage_ip }} _admin
+      loop: "{{ ceph_hosts | difference(orch_hosts.stdout | from_json | map(attribute='hostname')) }}"
+      changed_when: true
+
+    - name: Place a monitor and a manager on every node
+      ansible.builtin.command: ceph orch apply {{ item }} --placement="{{ ceph_hosts | join(',') }}"
+      loop: [mon, mgr]
+      changed_when: false
+
+    - name: Use every empty disk as an OSD
+      ansible.builtin.command: ceph orch apply osd --all-available-devices
+      changed_when: false
+
+    - name: Wait for the OSDs
+      ansible.builtin.command: ceph osd stat --format json
+      register: osd_stat
+      until: (osd_stat.stdout | from_json).num_up_osds | int >= expected_osds | int
+      retries: 60
+      delay: 20
+      changed_when: false
+
+    # Scraped by Kolla's Prometheus
+    - name: Enable the Prometheus exporter
+      ansible.builtin.command: ceph mgr module enable prometheus
+      changed_when: false
+
+    - name: Create the RBD pools
+      ansible.builtin.shell: ceph osd pool create {{ item }} && rbd pool init {{ item }}
+      loop: "{{ rbd_pools }}"
+      changed_when: false
+
+    - name: Create the Gnocchi pool
+      ansible.builtin.shell: >-
+        ceph osd pool create gnocchi &&
+        ceph osd pool application enable gnocchi gnocchi --yes-i-really-mean-it
+      when: enable_metering
+      changed_when: false
+
+    - name: Deploy the RADOS gateways
+      when: enable_ceph_rgw
+      block:
+        - name: Write the RGW spec
+          ansible.builtin.copy:
+            dest: /etc/ceph/rgw.yml
+            mode: "0644"
+            content: |
+              service_type: rgw
+              service_id: default
+              placement:
+                hosts: {{ ceph_hosts | to_json }}
+              networks:
+                - {{ lab_net.storage_subnet }}
+              spec:
+                rgw_frontend_port: 7480
+
+        - name: Apply the RGW spec
+          ansible.builtin.command: ceph orch apply -i /etc/ceph/rgw.yml
+          changed_when: false
+
+    - name: Create the client keys
+      ansible.builtin.command: ceph auth get-or-create client.{{ item.key }} {{ item.value }}
+      loop: "{{ client_keys | dict2items }}"
+      loop_control:
+        label: client.{{ item.key }}
+      register: keyrings
+      changed_when: false
+      no_log: true
+
+    - name: Generate a minimal ceph.conf
+      ansible.builtin.command: ceph config generate-minimal-conf
+      register: minimal_conf
+      changed_when: false
+
+    - name: Create the Kolla config directories
+      ansible.builtin.file:
+        path: /etc/kolla/config/{{ item.dir }}
+        state: directory
+        owner: "{{ kolla_user }}"
+        mode: "0755"
+      loop: "{{ kolla_ceph_files }}"
+      loop_control:
+        label: "{{ item.dir }}"
+
+    # Kolla's config merge chokes on the tabs Ceph indents with
+    - name: Write ceph.conf for the OpenStack services
+      ansible.builtin.copy:
+        dest: /etc/kolla/config/{{ item }}/ceph.conf
+        content: "{{ minimal_conf.stdout | regex_replace('(?m)^\\s+', '') }}\n"
+        owner: "{{ kolla_user }}"
+        mode: "0644"
+      loop: [glance, cinder, nova, gnocchi]
+
+    - name: Write the keyrings
+      ansible.builtin.copy:
+        dest: /etc/kolla/config/{{ item.0.dir }}/ceph.client.{{ item.1 }}.keyring
+        content: "{{ (keyrings.results | selectattr('item.key', 'equalto', item.1) | first).stdout | regex_replace('(?m)^\\s+', '') }}\n"
+        owner: "{{ kolla_user }}"
+        mode: "0600"
+      loop: "{{ kolla_ceph_files | subelements('keys') }}"
+      loop_control:
+        label: "{{ item.0.dir }}/ceph.client.{{ item.1 }}.keyring"
+      no_log: true
+
+    - name: Report the cluster health
+      ansible.builtin.command: ceph -s
+      register: ceph_status
+      changed_when: false
+
+    - name: Ceph status
+      ansible.builtin.debug:
+        msg: "{{ ceph_status.stdout_lines }}"

@@ -1,0 +1,84 @@
+# One zone for tasks/dns.yml (zone: name, rrsets).
+- name: "{{ zone.name }}: look up the zone"
+  ansible.builtin.uri:
+    url: "{{ zone_url }}"
+    headers: { X-API-Key: "{{ pdns_api_key }}" }
+    status_code: [200, 404, 422]
+  register: zone_get
+  no_log: true
+  vars:
+    zone_url: "{{ lab_net.pdns_api }}/api/v1/servers/localhost/zones/{{ zone.name }}"
+
+- name: "{{ zone.name }}: create the zone"
+  ansible.builtin.uri:
+    url: "{{ lab_net.pdns_api }}/api/v1/servers/localhost/zones"
+    method: POST
+    headers: { X-API-Key: "{{ pdns_api_key }}" }
+    body_format: json
+    body:
+      name: "{{ zone.name }}"
+      kind: Native
+      soa_edit_api: DEFAULT
+      nameservers: ["{{ lab_net.pdns_server_ns }}."]
+      rrsets:
+        - name: "{{ zone.name }}"
+          type: SOA
+          ttl: 3600
+          records:
+            - content: "{{ lab_net.pdns_server_ns }}. hostmaster.home. 1 3600 900 604800 300"
+              disabled: false
+    status_code: [201]
+  when: dns_state == 'present' and zone_get.status != 200
+  changed_when: true
+  no_log: true
+
+- name: "{{ zone.name }}: read the records"
+  ansible.builtin.uri:
+    url: "{{ lab_net.pdns_api }}/api/v1/servers/localhost/zones/{{ zone.name }}"
+    headers: { X-API-Key: "{{ pdns_api_key }}" }
+  register: zone_now
+  when: dns_state == 'present'
+  no_log: true
+
+# Replace every record set the lab wants, delete the ones it no longer does;
+# leave the SOA and NS at the apex alone. A PATCH with unchanged records is
+# a no-op on the server
+- name: "{{ zone.name }}: update the records"
+  ansible.builtin.uri:
+    url: "{{ lab_net.pdns_api }}/api/v1/servers/localhost/zones/{{ zone.name }}"
+    method: PATCH
+    headers: { X-API-Key: "{{ pdns_api_key }}" }
+    body_format: json
+    body:
+      rrsets: "{{ (replace | from_json) + (delete | from_json) }}"
+    status_code: [204]
+  when: dns_state == 'present' and (stale | length > 0 or wanted != current)
+  changed_when: true
+  no_log: true
+  vars:
+    existing: "{{ zone_now.json.rrsets | rejectattr('type', 'in', ['SOA', 'NS']) | list }}"
+    wanted: "{{ zone.rrsets | map(attribute='name') | zip(zone.rrsets | map(attribute='type'), zone.rrsets | map(attribute='records') | map('sort')) | map('join', '|') | sort }}"
+    current: |-
+      {{ existing | map(attribute='name')
+         | zip(existing | map(attribute='type'),
+               existing | map(attribute='records') | map('map', attribute='content') | map('sort'))
+         | map('join', '|') | sort }}
+    stale: |-
+      {{ existing | rejectattr('name', 'in', zone.rrsets | map(attribute='name') | list) | list
+         + existing | selectattr('name', 'in', zone.rrsets | map(attribute='name') | list)
+                    | rejectattr('type', 'in', zone.rrsets | map(attribute='type') | list) | list }}
+    replace: |-
+      [{% for r in zone.rrsets %}{"name": "{{ r.name }}", "type": "{{ r.type }}", "ttl": 300, "changetype": "REPLACE",
+        "records": [{% for c in r.records %}{"content": "{{ c }}", "disabled": false}{{ ',' if not loop.last }}{% endfor %}]}{{ ',' if not loop.last }}{% endfor %}]
+    delete: |-
+      [{% for r in stale %}{"name": "{{ r.name }}", "type": "{{ r.type }}", "changetype": "DELETE"}{{ ',' if not loop.last }}{% endfor %}]
+
+- name: "{{ zone.name }}: delete the zone"
+  ansible.builtin.uri:
+    url: "{{ lab_net.pdns_api }}/api/v1/servers/localhost/zones/{{ zone.name }}"
+    method: DELETE
+    headers: { X-API-Key: "{{ pdns_api_key }}" }
+    status_code: [204]
+  when: dns_state == 'absent' and zone_get.status == 200
+  changed_when: true
+  no_log: true

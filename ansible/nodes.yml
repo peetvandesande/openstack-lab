@@ -1,0 +1,87 @@
+# Base configuration of the OpenStack nodes: network, time, packages.
+# Imported by site.yml; can be run on its own.
+
+- name: Prepare the nodes
+  hosts: openstack
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH and cloud-init
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      register: cloud_init
+      # 2 means finished with recoverable errors
+      failed_when: cloud_init.rc not in [0, 2]
+      changed_when: false
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    # From now on netplan owns the network configuration
+    - name: Stop cloud-init managing the network
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+        content: "network: {config: disabled}\n"
+        mode: "0644"
+
+    - name: Write the network configuration
+      ansible.builtin.template:
+        src: netplan.yaml.j2
+        dest: /etc/netplan/60-openstack-lab.yaml
+        mode: "0600"
+      register: netplan
+
+    - name: Remove the cloud-init network configuration
+      ansible.builtin.file:
+        path: /etc/netplan/50-cloud-init.yaml
+        state: absent
+      register: netplan_old
+
+    # Renaming the NICs needs a reboot
+    - name: Reboot into the new network configuration
+      ansible.builtin.reboot:
+      when: netplan is changed or netplan_old is changed
+
+    - name: Check every NIC came up under its new name
+      ansible.builtin.command: ip -br link show {{ item }}
+      loop: "{{ nics.keys() | list }}"
+      changed_when: false
+
+    # Registered in DNS by the bootstrap
+    - name: Check the public endpoint name resolves
+      ansible.builtin.command: getent hosts {{ public_fqdn }}
+      register: public_name
+      changed_when: false
+      failed_when: external_vip not in public_name.stdout
+
+    # Kolla-Ansible restarts containers when Docker is upgraded; updates are
+    # done deliberately instead
+    - name: Remove unattended-upgrades
+      ansible.builtin.apt:
+        name: unattended-upgrades
+        state: absent
+        purge: true
+
+    - name: Install the base packages
+      ansible.builtin.apt:
+        name: [chrony, lvm2, python3, qemu-utils, jq]
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Configure chrony
+      ansible.builtin.copy:
+        dest: /etc/chrony/sources.d/openstack-lab.sources
+        content: |
+          {% for s in lab_net.ntp_servers.split() %}
+          pool {{ s }} iburst
+          {% endfor %}
+        mode: "0644"
+      register: chrony
+
+    - name: Restart chrony
+      ansible.builtin.systemd_service:
+        name: chrony
+        state: restarted
+      when: chrony is changed

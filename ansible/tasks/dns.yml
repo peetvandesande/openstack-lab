@@ -1,0 +1,53 @@
+# Registers the lab's names in PowerDNS (dns_state: present) or removes them
+# (dns_state: absent). Runs on the Proxmox host, which may reach the API;
+# needs lab, lab_net and pdns_api_key. One forward zone (DOMAIN) and the
+# reverse zones of the management and API networks, all owned by the lab:
+# records in them that the lab no longer wants are deleted.
+#
+# Names:
+#   <prefix>-<n>.DOMAIN   management address of each node (+ PTR)
+#   api.DOMAIN            external VIP: public endpoints, Horizon (+ PTR)
+#   api-int.DOMAIN        internal VIP (+ PTR)
+#   ns1.DOMAIN            the nodes' API addresses, where Designate's BIND listens
+- name: Check the networks are /24s
+  ansible.builtin.assert:
+    that: lab_net[item].endswith('/24')
+    fail_msg: "{{ item }} must be a /24 for the reverse zones"
+    quiet: true
+  loop: [mgmt_subnet, api_subnet]
+
+- name: Work out the records
+  ansible.builtin.set_fact:
+    dns_zones: "{{ zones | from_yaml }}"
+  vars:
+    domain: "{{ lab_net.domain }}."
+    mgmt: "{{ lab_net.mgmt_subnet.split('/')[0].rsplit('.', 1)[0] }}"
+    api: "{{ lab_net.api_subnet.split('/')[0].rsplit('.', 1)[0] }}"
+    first: "{{ lab_net.node_host_start | int }}"
+    vip: "{{ lab_net.vip_host | int }}"
+    nodes: "{{ range(lab.node_count | int) | list }}"
+    zones: |
+      - name: "{{ domain }}"
+        rrsets:
+      {% for i in nodes %}
+          - { name: "{{ lab.name_prefix }}-{{ i + 1 }}.{{ domain }}", type: A, records: ["{{ mgmt }}.{{ first | int + i }}"] }
+      {% endfor %}
+          - { name: "api.{{ domain }}", type: A, records: ["{{ api }}.{{ vip }}"] }
+          - { name: "api-int.{{ domain }}", type: A, records: ["{{ mgmt }}.{{ vip }}"] }
+          - { name: "ns1.{{ domain }}", type: A, records: [{% for i in nodes %}"{{ api }}.{{ first | int + i }}"{{ ', ' if not loop.last }}{% endfor %}] }
+      - name: "{{ mgmt.split('.') | reverse | join('.') }}.in-addr.arpa."
+        rrsets:
+      {% for i in nodes %}
+          - { name: "{{ first | int + i }}.{{ mgmt.split('.') | reverse | join('.') }}.in-addr.arpa.", type: PTR, records: ["{{ lab.name_prefix }}-{{ i + 1 }}.{{ domain }}"] }
+      {% endfor %}
+          - { name: "{{ vip }}.{{ mgmt.split('.') | reverse | join('.') }}.in-addr.arpa.", type: PTR, records: ["api-int.{{ domain }}"] }
+      - name: "{{ api.split('.') | reverse | join('.') }}.in-addr.arpa."
+        rrsets:
+          - { name: "{{ vip }}.{{ api.split('.') | reverse | join('.') }}.in-addr.arpa.", type: PTR, records: ["api.{{ domain }}"] }
+
+- name: Update the zones
+  ansible.builtin.include_tasks: dns-zone.yml
+  loop: "{{ dns_zones }}"
+  loop_control:
+    loop_var: zone
+    label: "{{ zone.name }}"

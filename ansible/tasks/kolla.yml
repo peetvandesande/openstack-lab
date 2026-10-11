@@ -1,0 +1,15 @@
+# Runs one kolla-ansible action on the deployment host (kolla_action), as the
+# deployment user. The output is kept in ~/kolla-logs/<action>.log there.
+- name: "kolla-ansible {{ kolla_action }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    mkdir -p ~/kolla-logs
+    kolla-ansible {{ kolla_action }} -i /etc/kolla/multinode 2>&1 | tee ~/kolla-logs/{{ kolla_action }}.log | tail -n 40
+  args:
+    executable: /bin/bash
+  environment:
+    PATH: "{{ kolla_venv }}/bin:{{ ansible_env.PATH }}"
+    VIRTUAL_ENV: "{{ kolla_venv }}"
+  become: true
+  become_user: "{{ kolla_user }}"
+  changed_when: true

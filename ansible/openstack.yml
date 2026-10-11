@@ -1,0 +1,83 @@
+# Deploys OpenStack with Kolla-Ansible from the deployment host, connects
+# Ceph RGW to Keystone and copies the credentials to secrets/ on this
+# machine. Imported by site.yml after ceph.yml.
+
+- name: Deploy OpenStack
+  hosts: openstack[0]
+  gather_facts: true
+  vars:
+    secrets_dir: "{{ playbook_dir }}/../secrets"
+  tasks:
+    - name: Run the prechecks
+      ansible.builtin.include_tasks: tasks/kolla.yml
+      vars:
+        kolla_action: prechecks
+
+    - name: Pull the images first, so a slow registry does not time out the deploy
+      ansible.builtin.include_tasks: tasks/kolla.yml
+      vars:
+        kolla_action: pull
+
+    - name: Deploy the containers
+      ansible.builtin.include_tasks: tasks/kolla.yml
+      vars:
+        kolla_action: deploy
+
+    - name: Write admin-openrc.sh and clouds.yaml
+      ansible.builtin.include_tasks: tasks/kolla.yml
+      vars:
+        kolla_action: post-deploy
+
+    # RGW authenticates Swift and S3 requests against Keystone, as the
+    # ceph_rgw user Kolla created
+    - name: Connect Ceph RGW to Keystone
+      when: enable_ceph_rgw
+      block:
+        - name: Read the passwords
+          ansible.builtin.slurp:
+            src: /etc/kolla/passwords.yml
+          register: passwords
+          no_log: true
+
+        - name: Configure RGW
+          ansible.builtin.command: ceph config set client.rgw {{ item.key }} {{ item.value }}
+          loop: "{{ rgw_settings | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+          changed_when: false
+          no_log: "{{ 'password' in item.key }}"
+          vars:
+            rgw_settings:
+              rgw_keystone_url: http://{{ internal_vip }}:5000
+              rgw_keystone_api_version: 3
+              rgw_keystone_admin_user: ceph_rgw
+              rgw_keystone_admin_password: "{{ (passwords.content | b64decode | from_yaml).ceph_rgw_keystone_password }}"
+              rgw_keystone_admin_project: service
+              rgw_keystone_admin_domain: default
+              rgw_keystone_accepted_roles: "member,admin"
+              rgw_keystone_accepted_admin_roles: admin
+              rgw_keystone_implicit_tenants: "true"
+              rgw_s3_auth_use_keystone: "true"
+              rgw_swift_account_in_url: "true"
+              rgw_swift_versioning_enabled: "true"
+
+        - name: Restart the gateways
+          ansible.builtin.command: ceph orch restart rgw.default
+          changed_when: true
+
+    - name: Copy the credentials and the lab CA to secrets/
+      ansible.builtin.fetch:
+        src: "{{ item }}"
+        dest: "{{ secrets_dir }}/"
+        flat: true
+      loop:
+        - /etc/kolla/admin-openrc.sh
+        - /etc/kolla/clouds.yaml
+        - /etc/kolla/passwords.yml
+        - /etc/kolla/certificates/ca/root.crt
+
+    - name: Done
+      ansible.builtin.debug:
+        msg:
+          - "Horizon: https://{{ public_fqdn }}/ (admin, keystone_admin_password in secrets/passwords.yml)"
+          - "{{ public_fqdn }} must resolve to {{ external_vip }} on your machine; trust secrets/root.crt"
