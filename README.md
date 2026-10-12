@@ -154,6 +154,9 @@ The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
 For the CLI on your own machine, use `secrets/clouds.yaml` and trust
 `secrets/root.crt`.
 
+The [manuals](docs/README.md) cover running the cloud: customers,
+instances, networking and services, containers, operations and updates.
+
 ## Removing the lab
 
 Destroy the VMs first, then run the playbook:

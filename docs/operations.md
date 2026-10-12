@@ -1,0 +1,347 @@
+# Operations
+
+Day-to-day running of the lab: getting in, starting and stopping it, checking
+its health, reading logs, changing the configuration and recovering from
+failures. See the [conventions](README.md#conventions) first.
+
+## Access
+
+### Web interfaces
+
+Passwords are in `secrets/passwords.yml` unless noted.
+
+| What | URL | User | Password |
+|---|---|---|---|
+| Horizon | `https://api.openstack.home/` | `admin` (domain `Default`) | `keystone_admin_password` |
+| Grafana | `https://api.openstack.home:3000/` | `admin` | `grafana_admin_password` |
+| OpenSearch Dashboards | `https://api.openstack.home:5601/` | `opensearch` | `opensearch_dashboards_password` |
+| Alertmanager | `https://api.openstack.home:9093/` | `admin` | `prometheus_alertmanager_password` |
+| Prometheus | `http://192.168.32.10:9091/` (internal VIP only) | `admin` | `prometheus_password` |
+| Ceph dashboard | `https://os-1.openstack.home:8443/` (or the active manager) | `admin` | `secrets/ceph-dashboard-password` |
+
+Your browser needs to trust `secrets/root.crt`. On macOS:
+
+```sh
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain secrets/root.crt
+```
+
+The Ceph dashboard has its own self-signed certificate; accept it once. If
+`os-1` isn't the active manager, the dashboard redirects you; find it with
+`sudo ceph mgr stat`.
+
+### CLI on the deployment host
+
+See [Conventions](README.md#conventions). The clients for every service
+(Nova, Neutron, Octavia, Designate, Heat, Barbican, Gnocchi, CloudKitty) are
+in the virtualenv.
+
+### CLI on your own machine
+
+```sh
+pipx install python-openstackclient
+pipx inject python-openstackclient python-octaviaclient python-designateclient \
+  python-heatclient python-barbicanclient
+```
+
+Make a copy of `clouds.yaml` that points at your copy of the CA. Keep it in
+`secrets/`, which is git-ignored, but under a different name: a deploy
+overwrites `secrets/clouds.yaml`.
+
+```sh
+sed "s#/etc/kolla/certificates/ca/root.crt#$PWD/secrets/root.crt#" \
+  secrets/clouds.yaml > secrets/clouds-local.yaml
+export OS_CLIENT_CONFIG_FILE=$PWD/secrets/clouds-local.yaml OS_CLOUD=kolla-admin
+openstack token issue
+```
+
+`kolla-admin` is the admin project over the public endpoints; you need that
+one from outside. `kolla-admin-system` is system scope, which a few
+admin-only APIs need. The `-internal` entries only work from the nodes.
+
+For a customer's own entry, see [Tenants](tenants.md#give-the-customer-a-cloudsyaml).
+
+### Consoles
+
+- Node consoles: Proxmox web UI on `https://lenora.home:8006/`, VMs 9201–9203
+  in pool `openstack-lab`.
+- Instance consoles: Horizon, or `openstack console url show <server>`.
+
+## Starting and stopping the lab
+
+The nodes don't start with the Proxmox host (`on_boot = false`). The
+control plane survives one node going down, but not all three at once:
+MariaDB Galera then has no member left to rejoin and needs a recovery step.
+
+### Stop
+
+1. Optionally stop the instances, so they shut down cleanly:
+
+   ```sh
+   openstack server list --all-projects --status ACTIVE -f value -c ID \
+     | xargs -r -n1 openstack server stop
+   ```
+
+2. Stop Ceph rebalancing while nodes go down:
+
+   ```sh
+   sudo ceph osd set noout
+   ```
+
+3. Shut the nodes down one at a time, `os-1` last (it is the deployment host
+   and you want its shell until the end). On lenora:
+
+   ```sh
+   for id in 9203 9202 9201; do qm shutdown $id --timeout 300; done
+   ```
+
+### Start
+
+1. On lenora:
+
+   ```sh
+   for id in 9201 9202 9203; do qm start $id; done
+   ```
+
+2. Give the nodes a few minutes, then check MariaDB. After a full stop it
+   almost always needs recovering:
+
+   ```sh
+   kolla-ansible mariadb-recovery -i /etc/kolla/multinode
+   ```
+
+   This finds the node with the most recent data, bootstraps the cluster from
+   it and starts the others. It is safe to run when unsure.
+
+3. Let Ceph rebalance again:
+
+   ```sh
+   sudo ceph osd unset noout
+   ```
+
+4. Run the [health checks](#health-checks). If RabbitMQ is in a bad state, see
+   [Recovery](#rabbitmq).
+
+5. Start the instances that should run:
+
+   ```sh
+   openstack server list --all-projects --status SHUTOFF
+   openstack server start <server> [<server> ...]
+   ```
+
+### Rebooting one node
+
+Fine at any time; the other two carry the control plane, and keepalived moves
+the VIPs. Move the instances off it first if they matter, as in
+[Patching the nodes](updates.md#patching-the-node-os). Set `noout` for the
+duration, so Ceph doesn't start copying the node's data elsewhere:
+
+```sh
+sudo ceph osd set noout
+sudo reboot            # on the node
+sudo ceph osd unset noout   # once its OSDs are back up
+```
+
+## Health checks
+
+A quick round, from the deployment host:
+
+```sh
+# OpenStack services
+openstack compute service list
+openstack network agent list
+openstack volume service list
+openstack orchestration service list
+openstack loadbalancer amphora list
+
+# Containers that are unhealthy, stopped or restarting, on every node
+ansible -i /etc/kolla/multinode control -m shell \
+  -a "docker ps -a | grep -E 'unhealthy|Exited|Restarting' || true"
+
+# Ceph
+sudo ceph -s
+sudo ceph health detail
+
+# Which node holds the VIPs
+ansible -i /etc/kolla/multinode control -m shell \
+  -a "ip -br addr | grep -E '192.168.3[23].10' || true"
+```
+
+Everything should report `up`, `:-)` or `enabled`. Ceph currently reports
+slow BlueStore operations because its disks are on the HDD pool; that
+warning is expected. Anything else under `ceph health detail` isn't.
+
+### Galera status
+
+```sh
+pw=$(sudo awk '/^database_password:/ {print $2}' /etc/kolla/passwords.yml)
+sudo docker exec mariadb mariadb -uroot -p"$pw" \
+  -e "SHOW STATUS WHERE Variable_name IN ('wsrep_cluster_size','wsrep_cluster_status','wsrep_local_state_comment')"
+```
+
+Expect a cluster size of 3, `Primary` and `Synced`.
+
+### RabbitMQ status
+
+```sh
+sudo docker exec rabbitmq rabbitmqctl cluster_status
+```
+
+All three nodes should be listed under running nodes, with no network
+partitions.
+
+### Grafana and alerts
+
+Grafana has dashboards for the nodes, OpenStack, RabbitMQ, MariaDB, HAProxy
+and Ceph. Firing alerts are in Alertmanager.
+
+## Logs
+
+| Where | What |
+|---|---|
+| `/var/log/kolla/<service>/` on each node | Every OpenStack service's log files |
+| `sudo docker logs <container>` | A container's start-up output |
+| OpenSearch Dashboards | All of the above from every node, searchable (index pattern `flog-*`, created by Kolla) |
+| `~ubuntu/kolla-logs/<action>.log` on `os-1` | Output of the Kolla-Ansible runs the playbooks started |
+| `sudo cephadm logs --name <daemon>` | A Ceph daemon's log; daemon names from `sudo ceph orch ps` |
+
+To follow a request through the services, search OpenSearch for its request
+ID (`req-...`), which the CLI prints with `--debug`.
+
+## Kolla containers
+
+Every OpenStack service runs as a Docker container on every node.
+
+```sh
+sudo docker ps                         # what runs here
+sudo docker restart nova_compute       # restart one service on this node
+kolla-ansible check -i /etc/kolla/multinode   # are the expected containers running?
+```
+
+To restart a service on every node, either loop over the nodes or let
+Kolla-Ansible do it:
+
+```sh
+kolla-ansible deploy-containers -i /etc/kolla/multinode -t nova
+```
+
+Don't change files inside containers: Kolla regenerates their configuration
+on every deploy. Change the configuration as below instead.
+
+## Changing the configuration
+
+There are three places, depending on what you change.
+
+1. **Settings the repository manages**: the optional services and the
+   day-2 settings in `ansible/group_vars/openstack.yml`, Kolla's settings in
+   `ansible/templates/globals.yml.j2`. Edit them in the repository, then
+   rewrite `/etc/kolla/globals.yml` without re-running the rest of the host
+   setup:
+
+   ```sh
+   ansible-playbook ansible/kolla-host.yml --tags kolla-config
+   ```
+
+2. **Service options** (`nova.conf`, `neutron.conf` and so on): put an
+   override file in `/etc/kolla/config/` on `os-1`. Kolla merges it into the
+   generated file. For example, `/etc/kolla/config/nova.conf`:
+
+   ```ini
+   [DEFAULT]
+   cpu_allocation_ratio = 4.0
+   ```
+
+   The repository doesn't manage these files (except the Ceph files
+   `ceph.yml` writes there), so note any you add.
+
+3. **Passwords**: `/etc/kolla/passwords.yml`. Don't change them by hand on
+   a running cloud; most services don't handle it.
+
+Then apply it to the service you changed:
+
+```sh
+kolla-ansible validate-config -i /etc/kolla/multinode -t nova   # optional
+kolla-ansible reconfigure -i /etc/kolla/multinode -t nova
+```
+
+`-t` takes the service names Kolla uses (`nova`, `neutron`, `cinder`,
+`octavia`, `horizon` …); leave it out to reconfigure everything, which takes
+about as long as a deploy. Use `genconfig` instead of `reconfigure` to write
+the configuration files without restarting anything.
+
+**Turning a service on**, such as one of the `enable_*` flags in
+`group_vars`, needs a `deploy` rather than a `reconfigure`, and HAProxy needs
+to learn about it too:
+
+```sh
+ansible-playbook ansible/kolla-host.yml --tags kolla-config
+kolla-ansible deploy -i /etc/kolla/multinode -t haproxy,<service>
+```
+
+Turning one off stops Kolla managing it, but leaves its containers running.
+Remove those by hand (`docker rm -f`) on every node.
+
+## Recovery
+
+### MariaDB
+
+If Galera has lost quorum (after a full stop, or two nodes failing), run
+`kolla-ansible mariadb-recovery -i /etc/kolla/multinode`. A single node that
+won't rejoin usually recovers with `sudo docker restart mariadb` on that
+node.
+
+### RabbitMQ
+
+Symptoms: services log `AMQP server ... is unreachable`, or instances stay
+in `BUILD`. Try restarting it on every node, one at a time:
+
+```sh
+ansible -i /etc/kolla/multinode control -m shell -a "docker restart rabbitmq" -f 1
+```
+
+If the cluster still doesn't form, reset it. This drops the queues, so the
+services then need restarting too:
+
+```sh
+kolla-ansible rabbitmq-reset-state -i /etc/kolla/multinode
+kolla-ansible deploy-containers -i /etc/kolla/multinode
+```
+
+### Ceph
+
+```sh
+sudo ceph health detail
+sudo ceph orch ps --refresh           # are all daemons running?
+sudo ceph orch daemon restart osd.3   # restart one daemon
+```
+
+An OSD that stays down after its node is back: `sudo ceph orch daemon
+restart osd.<id>`, then check its log with `sudo cephadm logs --name
+osd.<id>` on the node it lives on (`sudo ceph osd tree`).
+
+### A stuck instance
+
+```sh
+openstack server set --state active <server>   # clear an error or stuck task state
+openstack server reboot --hard <server>
+```
+
+### Re-running the playbooks
+
+`ansible/site.yml` and each of its parts are safe to re-run on a working
+lab. A re-run deploys again, so it restarts services that changed, but keeps
+the data, the passwords and the certificates. `cloud.yml` on its own is
+quick: it only puts back missing flavours, images and the demo customer.
+
+## Disk space
+
+Docker images and logs live on each node's 100 GB system disk. Check it now
+and then, and clean up after upgrades:
+
+```sh
+ansible -i /etc/kolla/multinode control -m shell -a "df -h / | tail -1"
+kolla-ansible prune-images -i /etc/kolla/multinode --yes-i-really-really-mean-it
+```
+
+Ceph capacity: `sudo ceph df`. With 3 replicas, usable space is a third of
+raw, and Ceph stops writes at 95% full. Keep it under 80%.
