@@ -66,6 +66,51 @@
           ansible.builtin.command: ceph orch restart rgw.default
           changed_when: true
 
+    # Kolla creates the flog-* index pattern without its field list, which
+    # the Explore page in OpenSearch Dashboards needs ("Could not locate that
+    # index-pattern-field (id: @timestamp)"). Fill it in, as Refresh fields
+    # in the UI does
+    - name: Refresh the fields of the log index pattern
+      when: enable_central_logging
+      vars:
+        osd_url: https://{{ public_fqdn }}:5601
+        osd_password: "{{ (osd_passwords.content | b64decode | from_yaml).opensearch_dashboards_password }}"
+      block:
+        - name: Read the OpenSearch Dashboards password
+          ansible.builtin.slurp:
+            src: /etc/kolla/passwords.yml
+          register: osd_passwords
+          no_log: true
+
+        - name: Read the fields of flog-*
+          ansible.builtin.uri:
+            url: "{{ osd_url }}/api/index_patterns/_fields_for_wildcard?pattern=flog-*&meta_fields=_source&meta_fields=_id&meta_fields=_type&meta_fields=_index&meta_fields=_score"
+            url_username: opensearch
+            url_password: "{{ osd_password }}"
+            force_basic_auth: true
+            ca_path: /etc/kolla/certificates/ca/root.crt
+            headers:
+              osd-xsrf: "true"
+          register: flog_fields
+
+        - name: Save them in the index pattern
+          ansible.builtin.uri:
+            url: "{{ osd_url }}/api/saved_objects/index-pattern/flog-pattern"
+            method: PUT
+            url_username: opensearch
+            url_password: "{{ osd_password }}"
+            force_basic_auth: true
+            ca_path: /etc/kolla/certificates/ca/root.crt
+            headers:
+              osd-xsrf: "true"
+            body_format: json
+            body:
+              attributes:
+                title: flog-*
+                timeFieldName: "@timestamp"
+                fields: "{{ flog_fields.json.fields | to_json }}"
+          changed_when: false
+
     - name: Copy the credentials and the lab CA to secrets/
       ansible.builtin.fetch:
         src: "{{ item }}"

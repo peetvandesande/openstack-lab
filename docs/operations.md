@@ -218,6 +218,11 @@ dashboards, Prometheus and ProxySQL, unparsed. It also gives Fluentd read
 access to the journal. Not collected: the Proxmox host, the amphorae and the
 instances.
 
+The `flog-*` index pattern keeps a list of the fields, which `openstack.yml`
+refreshes after a deploy. If a field you can see in the documents is missing
+from the filters, refresh it under Dashboards Management → Index patterns →
+`flog-*` → Refresh field list.
+
 ## Kolla containers
 
 Every OpenStack service runs as a Docker container on every node.
