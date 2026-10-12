@@ -119,6 +119,12 @@ enable_grafana: "{{ enable_monitoring | ternary('yes', 'no') }}"
 {% if enable_monitoring %}
 enable_prometheus_alertmanager: "yes"
 enable_prometheus_ceph_mgr_exporter: "yes"
+# cAdvisor walks the cgroups of ~80 containers per node and was the busiest
+# process on every one of them; node-exporter covers what we look at
+enable_prometheus_cadvisor: "no"
+# Every scrape logs in to Keystone afresh for each service it queries, and
+# each Prometheus server scrapes it: at 60s that was ~42 bcrypt checks a minute
+prometheus_openstack_exporter_interval: "300s"
 prometheus_ceph_mgr_exporter_endpoints:
 {% for h in groups['openstack'] %}
   - "{{ hostvars[h].ansible_host }}:9283"
