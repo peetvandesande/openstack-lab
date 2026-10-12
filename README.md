@@ -145,10 +145,10 @@ The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
 
 | What | Where |
 |---|---|
-| Horizon | `https://api.openstack.home/`, user `admin`, `keystone_admin_password` from `secrets/passwords.yml` |
+| Horizon | [https://api.openstack.home/](https://api.openstack.home/), user `admin`, `keystone_admin_password` from `secrets/passwords.yml` |
 | Customer login | domain `customers`, user `demo`, password in `secrets/demo-password` |
-| Grafana | `https://api.openstack.home:3000/` |
-| Ceph dashboard | `https://os-1.openstack.home:8443/` (or the active manager), user `admin` |
+| Grafana | [https://api.openstack.home:3000/](https://api.openstack.home:3000/) |
+| Ceph dashboard | [https://os-1.openstack.home:8443/](https://os-1.openstack.home:8443/) (or the active manager), user `admin` |
 | CLI | `ssh ubuntu@os-1.openstack.home`, then `source /opt/kolla/venv/bin/activate` and `export OS_CLOUD=kolla-admin OS_CLIENT_CONFIG_FILE=/etc/kolla/clouds.yaml` |
 
 For the CLI on your own machine, use `secrets/clouds.yaml` and trust

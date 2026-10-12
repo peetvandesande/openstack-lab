@@ -12,12 +12,12 @@ Passwords are in `secrets/passwords.yml` unless noted.
 
 | What | URL | User | Password |
 |---|---|---|---|
-| Horizon | `https://api.openstack.home/` | `admin` (domain `Default`) | `keystone_admin_password` |
-| Grafana | `https://api.openstack.home:3000/` | `admin` | `grafana_admin_password` |
-| OpenSearch Dashboards | `https://api.openstack.home:5601/` | `opensearch` | `opensearch_dashboards_password` |
-| Alertmanager | `https://api.openstack.home:9093/` | `admin` | `prometheus_alertmanager_password` |
-| Prometheus | `http://192.168.32.10:9091/` (internal VIP only) | `admin` | `prometheus_password` |
-| Ceph dashboard | `https://os-1.openstack.home:8443/` (or the active manager) | `admin` | `secrets/ceph-dashboard-password` |
+| Horizon | [https://api.openstack.home/](https://api.openstack.home/) | `admin` (domain `Default`) | `keystone_admin_password` |
+| Grafana | [https://api.openstack.home:3000/](https://api.openstack.home:3000/) | `admin` | `grafana_admin_password` |
+| OpenSearch Dashboards | [https://api.openstack.home:5601/](https://api.openstack.home:5601/) | `opensearch` | `opensearch_dashboards_password` |
+| Alertmanager | [https://api.openstack.home:9093/](https://api.openstack.home:9093/) | `admin` | `prometheus_alertmanager_password` |
+| Prometheus | [http://192.168.32.10:9091/](http://192.168.32.10:9091/) (internal VIP only) | `admin` | `prometheus_password` |
+| Ceph dashboard | [https://os-1.openstack.home:8443/](https://os-1.openstack.home:8443/) (or the active manager) | `admin` | `secrets/ceph-dashboard-password` |
 
 Your browser needs to trust `secrets/root.crt`. On macOS:
 
@@ -63,7 +63,7 @@ For a customer's own entry, see [Tenants](tenants.md#give-the-customer-a-cloudsy
 
 ### Consoles
 
-- Node consoles: Proxmox web UI on `https://lenora.home:8006/`, VMs 9201–9203
+- Node consoles: Proxmox web UI on [https://lenora.home:8006/](https://lenora.home:8006/), VMs 9201–9203
   in pool `openstack-lab`.
 - Instance consoles: Horizon, or `openstack console url show <server>`.
 
