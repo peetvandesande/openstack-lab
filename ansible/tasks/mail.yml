@@ -1,0 +1,109 @@
+# Creates the customer's mail domain and mailboxes on hermes, the homelab's
+# mailcow (mail_state: present), or deletes the domain with every mailbox in
+# it (mail_state: absent). Runs on the Proxmox host, the only address the API
+# accepts; needs lab, lab_net, mailcow_api_key, customer and repo. Passwords
+# are generated into secrets/<address>-password and set only when a mailbox
+# is created. mailcow answers HTTP 200 to most failures, so each change
+# checks the "type" of every message it returns.
+- name: Check the mailcow API key was found
+  ansible.builtin.assert:
+    that: mailcow_api_key | length > 0
+    fail_msg: no mailcow API key – set MAILCOW_API_KEY or check MAILCOW_API_KEY_FILE in network.conf (or leave MAILCOW_API empty to skip mail)
+    quiet: true
+
+- name: Pick the customer's mail settings
+  ansible.builtin.set_fact:
+    mail: "{{ customer.mail }}"
+
+- name: "{{ mail.domain }}: look up the domain"
+  ansible.builtin.uri:
+    url: "{{ lab_net.mailcow_api }}/api/v1/get/domain/{{ mail.domain }}"
+    headers: { X-API-Key: "{{ mailcow_api_key }}" }
+  register: mail_domain
+  no_log: true
+
+- name: "{{ mail.domain }}: create the domain"
+  ansible.builtin.uri:
+    url: "{{ lab_net.mailcow_api }}/api/v1/add/domain"
+    method: POST
+    headers: { X-API-Key: "{{ mailcow_api_key }}" }
+    body_format: json
+    body:
+      domain: "{{ mail.domain }}"
+      description: "{{ customer.project }} ({{ lab.pool_id }})"
+      active: "1"
+      mailboxes: "{{ mail.quota.mailboxes }}"
+      aliases: "{{ mail.quota.aliases }}"
+      quota: "{{ mail.quota.domain }}"
+      maxquota: "{{ mail.quota.mailbox }}"
+      defquota: "{{ mail.quota.mailbox }}"
+      # SOGo only offers domains it knew when it started
+      restart_sogo: "1"
+  register: mail_result
+  failed_when: mail_result.json | selectattr('type', 'in', ['danger', 'error']) | list | length > 0
+  changed_when: true
+  when: mail_state == 'present' and 'domain_name' not in mail_domain.json
+  no_log: true
+
+- name: "{{ mail.domain }}: look up the mailboxes"
+  ansible.builtin.uri:
+    url: "{{ lab_net.mailcow_api }}/api/v1/get/mailbox/all/{{ mail.domain }}"
+    headers: { X-API-Key: "{{ mailcow_api_key }}" }
+  register: mail_boxes
+  no_log: true
+
+- name: "{{ mail.domain }}: create the mailboxes"
+  ansible.builtin.uri:
+    url: "{{ lab_net.mailcow_api }}/api/v1/add/mailbox"
+    method: POST
+    headers: { X-API-Key: "{{ mailcow_api_key }}" }
+    body_format: json
+    body:
+      local_part: "{{ item.local_part }}"
+      domain: "{{ mail.domain }}"
+      name: "{{ item.name }}"
+      password: "{{ password }}"
+      password2: "{{ password }}"
+      quota: "{{ mail.quota.mailbox }}"
+      authsource: mailcow
+      active: "1"
+  register: mail_result
+  failed_when: mail_result.json | selectattr('type', 'in', ['danger', 'error']) | list | length > 0
+  changed_when: true
+  when: mail_state == 'present' and address not in existing
+  loop: "{{ mail.mailboxes }}"
+  loop_control:
+    label: "{{ address }}"
+  no_log: true
+  vars:
+    address: "{{ item.local_part }}@{{ mail.domain }}"
+    existing: "{{ mail_boxes.json | map(attribute='username') | list }}"
+    password: "{{ lookup('ansible.builtin.password', repo ~ '/secrets/' ~ address ~ '-password', chars=['ascii_letters', 'digits'], length=20) }}"
+
+# The domain belongs to the lab, so everything in it goes, not only the
+# mailboxes listed in customer.mail
+- name: "{{ mail.domain }}: delete the mailboxes"
+  ansible.builtin.uri:
+    url: "{{ lab_net.mailcow_api }}/api/v1/delete/mailbox"
+    method: POST
+    headers: { X-API-Key: "{{ mailcow_api_key }}" }
+    body_format: json
+    body: "{{ mail_boxes.json | map(attribute='username') | list }}"
+  register: mail_result
+  failed_when: mail_result.json | selectattr('type', 'in', ['danger', 'error']) | list | length > 0
+  changed_when: true
+  when: mail_state == 'absent' and mail_boxes.json | length > 0
+  no_log: true
+
+- name: "{{ mail.domain }}: delete the domain"
+  ansible.builtin.uri:
+    url: "{{ lab_net.mailcow_api }}/api/v1/delete/domain"
+    method: POST
+    headers: { X-API-Key: "{{ mailcow_api_key }}" }
+    body_format: json
+    body: ["{{ mail.domain }}"]
+  register: mail_result
+  failed_when: mail_result.json | selectattr('type', 'in', ['danger', 'error']) | list | length > 0
+  changed_when: true
+  when: mail_state == 'absent' and 'domain_name' in mail_domain.json
+  no_log: true

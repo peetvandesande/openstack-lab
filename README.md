@@ -25,7 +25,8 @@ resource pool, so it cannot touch other VMs on the host.
 - **Operations**: Prometheus, Alertmanager and Grafana (including the Ceph
   exporter), Fluentd to OpenSearch with OpenSearch Dashboards
 - **Day-2 setup**: public network, flavours, raw images, a volume type and an
-  onboarded customer (own domain, project, user, quota, network and router)
+  onboarded customer (own domain, project, user, quota, network and router,
+  and mailboxes on the homelab's mailcow)
 
 Turn any of the optional services off in
 [ansible/group_vars/openstack.yml](ansible/group_vars/openstack.yml).
@@ -80,6 +81,23 @@ setup. The API key is read from `../homelab/dns/secrets.env`, or from
 to skip DNS altogether.
 
 The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
+
+## Mail
+
+`cloud.yml` gives the demo customer a mail domain, `demo.test`, with the
+mailboxes `ops`, `alice` and `bob` on hermes, the homelab's mailcow. `ops` is
+the Keystone user's email address. The mail is read in SOGo at
+[https://hermes.home/SOGo/](https://hermes.home/SOGo/); the passwords are in
+`secrets/<address>-password`. The teardown deletes the domain and every
+mailbox in it.
+
+Like the DNS zones, they are created through hermes's API from lenora, the
+only address it accepts. The API key is read from
+`../homelab/hermes/secrets.env`, which `homelab/hermes/scripts/deploy.sh`
+generates, or from `MAILCOW_API_KEY` in the environment. Set `MAILCOW_API=`
+(empty) in `network.conf` to skip mail. The domain and mailboxes are in
+`customer.mail` in
+[ansible/group_vars/openstack.yml](ansible/group_vars/openstack.yml).
 
 ## Usage
 
@@ -138,8 +156,8 @@ The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
    of each Kolla-Ansible run goes to `~ubuntu/kolla-logs/`.
 
    Credentials go to `secrets/` (git-ignored): `admin-openrc.sh`,
-   `clouds.yaml`, `passwords.yml`, the lab CA `root.crt` and the demo customer's
-   password. `passwords.yml` also holds the Ceph dashboard password,
+   `clouds.yaml`, `passwords.yml`, the lab CA `root.crt`, the demo customer's
+   password and its mailbox passwords. `passwords.yml` also holds the Ceph dashboard password,
    `ceph_dashboard_password`.
 
 ## Using the cloud
@@ -148,6 +166,7 @@ The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
 |---|---|
 | Horizon | [https://api.openstack.home/](https://api.openstack.home/), user `admin`, `keystone_admin_password` from `secrets/passwords.yml` |
 | Customer login | domain `customers`, user `demo`, password in `secrets/demo-password` |
+| Customer mail | [https://hermes.home/SOGo/](https://hermes.home/SOGo/), e.g. `ops@demo.test`, password in `secrets/ops@demo.test-password` |
 | Grafana | [https://api.openstack.home:3000/](https://api.openstack.home:3000/) |
 | Ceph dashboard | [https://os-1.openstack.home:8443/](https://os-1.openstack.home:8443/) (or the active manager), user `admin`, `ceph_dashboard_password` from `secrets/passwords.yml` |
 | CLI | `ssh ubuntu@os-1.openstack.home`, then `source /opt/kolla/venv/bin/activate` and `export OS_CLOUD=kolla-admin OS_CLIENT_CONFIG_FILE=/etc/kolla/clouds.yaml` |
@@ -172,6 +191,7 @@ The playbook stops if the pool still holds VMs. It removes:
 - the token, its permissions and the pool
 - the Terraform user, if no other project uses it
 - the lab's DNS zones
+- the customer's mail domain and mailboxes on hermes
 - the SDN zone and the NAT unit
 - the local state, the inventory, `secrets/` and `secret.tfvars`
 

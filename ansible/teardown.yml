@@ -6,6 +6,7 @@
 #   - removes the token, its permissions and the pool
 #   - removes the Terraform user, unless another project still uses it
 #   - removes the lab's zones from PowerDNS
+#   - removes the customer's mail domain and mailboxes from hermes
 #   - removes the lab network: SNAT unit and SDN zone with its vnets
 #   - deletes the local state, inventory, secrets/ and secret.tfvars
 #
@@ -38,6 +39,9 @@
 - name: Tear down Proxmox
   hosts: proxmox
   gather_facts: false
+  # For customer.mail; the inventory may already be gone
+  vars_files:
+    - group_vars/openstack.yml
   vars:
     tf_user: terraform@pve
     token_name: "{{ lab.pool_id }}"
@@ -136,6 +140,12 @@
       vars:
         dns_state: absent
       when: lab_net.pdns_api | default('') | length > 0
+
+    - name: Remove the customer's mail
+      ansible.builtin.include_tasks: tasks/mail.yml
+      vars:
+        mail_state: absent
+      when: lab_net.mailcow_api | default('') | length > 0
 
     # The lab network. Stopping the unit removes its SNAT rule
     - name: Check for the NAT unit

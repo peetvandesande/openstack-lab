@@ -65,10 +65,19 @@ images:
 amphora_image_url: https://tarballs.opendev.org/openstack/octavia/test-images/test-only-amphora-x64-haproxy-ubuntu-noble.qcow2
 
 # A customer, set up the way a provider would onboard one: its own domain,
-# project, user, quota, network and router
+# project, user, quota, network and router. And mail on hermes, so the
+# customer's people have addresses to sign up and be alerted with: the first
+# mailbox is the Keystone user's email. Quotas in MiB
 customer:
   domain: customers
   project: demo
   user: demo
   network_cidr: 10.10.0.0/24
   quota: { instances: 10, cores: 20, ram: 40960, volumes: 10, gigabytes: 500, floating_ips: 5 }
+  mail:
+    domain: demo.test
+    quota: { mailboxes: 10, aliases: 20, domain: 10240, mailbox: 1024 }
+    mailboxes:
+      - { local_part: ops, name: Demo Operations }
+      - { local_part: alice, name: Alice Demo }
+      - { local_part: bob, name: Bob Demo }

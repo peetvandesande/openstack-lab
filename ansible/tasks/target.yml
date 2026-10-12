@@ -11,6 +11,7 @@
     lab: "{{ lab }}"
     lab_net: "{{ lab_net }}"
     pdns_api_key: "{{ pdns_api_key | default('') }}"
+    mailcow_api_key: "{{ mailcow_api_key | default('') }}"
     repo: "{{ repo }}"
   vars:
     target: "{{ proxmox_target or ('root@' ~ (lab.pm_endpoint | regex_replace('^https?://([^:/]+).*', '\\1'))) }}"

@@ -1,8 +1,19 @@
 # Day-2 configuration a provider does before handing out projects: the
 # public network, flavours, images, the Octavia amphora image, a volume type
 # and one onboarded customer. Runs on the deployment host with the
-# OpenStack SDK from the Kolla virtualenv. Imported by site.yml; safe to
-# re-run.
+# OpenStack SDK from the Kolla virtualenv. The customer's mail domain and
+# mailboxes on hermes are created from the Proxmox host, the only address
+# mailcow's API accepts. Imported by site.yml; safe to re-run.
+
+- name: Read the lab settings
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    repo: "{{ playbook_dir }}/.."
+    proxmox_target: ""
+  tasks:
+    - ansible.builtin.import_tasks: tasks/target.yml
 
 - name: Configure the cloud
   hosts: openstack[0]
@@ -130,6 +141,7 @@
         name: "{{ customer.user }}"
         domain: "{{ customer.domain }}"
         default_project: "{{ customer_project.project.id }}"
+        email: "{{ customer.mail.mailboxes[0].local_part }}@{{ customer.mail.domain }}"
         password: "{{ customer_password }}"
         update_password: on_create
       register: customer_user
@@ -198,3 +210,24 @@
         msg: >-
           Customer {{ customer.user }}@{{ customer.domain }} (project {{ customer.project }}),
           password in secrets/{{ customer.user }}-password
+
+# group_vars only reach the nodes; the Proxmox host reads customer from the
+# file itself
+- name: Customer mail
+  hosts: proxmox
+  gather_facts: false
+  vars_files:
+    - group_vars/openstack.yml
+  tasks:
+    - name: Create the customer's mailboxes
+      ansible.builtin.include_tasks: tasks/mail.yml
+      vars:
+        mail_state: present
+      when: lab_net.mailcow_api | default('') | length > 0
+
+    - name: Done
+      ansible.builtin.debug:
+        msg: >-
+          Mail for {{ customer.mail.domain }} in SOGo at {{ lab_net.mailcow_api }}/SOGo/,
+          passwords in secrets/<address>-password
+      when: lab_net.mailcow_api | default('') | length > 0
