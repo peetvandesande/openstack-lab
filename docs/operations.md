@@ -201,12 +201,22 @@ and Ceph. Firing alerts are in Alertmanager.
 |---|---|
 | `/var/log/kolla/<service>/` on each node | Every OpenStack service's log files |
 | `sudo docker logs <container>` | A container's start-up output |
+| `sudo journalctl` on each node | The system: sshd, sudo, cron, systemd, the kernel, and every Ceph daemon |
 | OpenSearch Dashboards | All of the above from every node, searchable (index pattern `flog-*`, created by Kolla) |
 | `~ubuntu/kolla-logs/<action>.log` on `os-1` | Output of the Kolla-Ansible runs the playbooks started |
 | `sudo cephadm logs --name <daemon>` | A Ceph daemon's log; daemon names from `sudo ceph orch ps` |
 
 To follow a request through the services, search OpenSearch for its request
 ID (`req-...`), which the CLI prints with `--debug`.
+
+In OpenSearch, `programname` says where a line came from: the service
+(`nova-api`), or for the journal its identifier (`sshd`, `sudo`). The Ceph
+daemons run under `bash` there; filter on `systemd_unit` (`ceph-*@osd.3.service`)
+to pick one. Kolla's Fluentd configuration leaves out a few of its own
+services; `kolla-host.yml` adds Gnocchi, Grafana, OpenSearch and its
+dashboards, Prometheus and ProxySQL, unparsed. It also gives Fluentd read
+access to the journal. Not collected: the Proxmox host, the amphorae and the
+instances.
 
 ## Kolla containers
 
@@ -252,7 +262,8 @@ There are three places, depending on what you change.
    ```
 
    The repository doesn't manage these files (except the Ceph files
-   `ceph.yml` writes there), so note any you add.
+   `ceph.yml` writes there and the Fluentd files from `kolla-host.yml`), so
+   note any you add.
 
 3. **Passwords**: `/etc/kolla/passwords.yml`. Don't change them by hand on
    a running cloud; most services don't handle it.

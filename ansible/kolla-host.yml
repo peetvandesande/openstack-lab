@@ -118,6 +118,37 @@
         kolla_example_inventory: "{{ example_inventory.content | b64decode }}"
       tags: kolla-config
 
+    # Picked up by Kolla-Ansible when it deploys Fluentd
+    - name: Create the Fluentd override directories
+      ansible.builtin.file:
+        path: /etc/kolla/config/fluentd/{{ item }}
+        state: directory
+        mode: "0755"
+      loop: [input, filter]
+      tags: kolla-config
+
+    - name: Add the logs Kolla's Fluentd leaves out
+      ansible.builtin.template:
+        src: fluentd-input.conf.j2
+        dest: /etc/kolla/config/fluentd/input/50-extra-logs.conf
+        mode: "0644"
+      vars:
+        fluentd_extra_logs:
+          gnocchi: /var/log/kolla/gnocchi/*.log
+          grafana: /var/log/kolla/grafana/grafana.log
+          opensearch: /var/log/kolla/opensearch/*.log
+          opensearch-dashboards: /var/log/kolla/opensearch-dashboards/*.log
+          prometheus: /var/log/kolla/prometheus/*.log
+          proxysql: /var/log/kolla/proxysql/*.log
+      tags: kolla-config
+
+    - name: Give the journal the fields the other logs have
+      ansible.builtin.copy:
+        src: templates/fluentd-filter.conf
+        dest: /etc/kolla/config/fluentd/filter/50-journal.conf
+        mode: "0644"
+      tags: kolla-config
+
     # kolla-genpwd only fills in empty entries, so re-running keeps the
     # existing passwords
     - name: Create passwords.yml
@@ -159,3 +190,18 @@
       ansible.builtin.include_tasks: tasks/kolla.yml
       vars:
         kolla_action: bootstrap-servers
+
+# Kolla's Fluentd reads the journal as user fluentd (42474), but the journal
+# is mounted read-only, so Kolla can't hand it the files. Grant read access
+# with an ACL instead, inherited by the files journald creates later
+- name: Let Fluentd read the journal
+  hosts: openstack
+  gather_facts: false
+  tasks:
+    - name: Install acl
+      ansible.builtin.apt:
+        name: acl
+
+    - name: Grant Fluentd read access to the journal
+      ansible.builtin.command: setfacl -R -m u:42474:rX -m d:u:42474:rX /var/log/journal
+      changed_when: false

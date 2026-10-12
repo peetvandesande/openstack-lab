@@ -1,0 +1,17 @@
+# Kolla logs that Kolla's own Fluentd configuration leaves out. The lines
+# go to OpenSearch unparsed, as Payload, under programname <name>.
+# Kolla-Ansible renders this file again, so it must stay free of Jinja.
+{% for name, path in fluentd_extra_logs.items() %}
+
+<source>
+  @type tail
+  path {{ path }}
+  pos_file /var/run/fluentd/extra-{{ name }}.pos
+  tag infra.{{ name }}
+  ignore_repeated_permission_error true
+  <parse>
+    @type regexp
+    expression /^(?<Payload>.*)$/
+  </parse>
+</source>
+{% endfor %}
