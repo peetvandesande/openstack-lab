@@ -321,15 +321,26 @@ Delete the old image once no amphora uses it.
 
 | Certificate | Expires | Used for |
 |---|---|---|
-| Lab CA, `/etc/kolla/certificates/ca/root.crt` | 31 July 2029 | Signs the public endpoint certificate |
+| Lab CA, `/etc/kolla/certificates/ca/root.crt` | 31 July 2029 | Signs the public endpoint and Ceph dashboard certificates |
 | Public endpoints, `/etc/kolla/certificates/haproxy.pem` | **11 October 2027** | HTTPS on `api.openstack.home` |
 | Octavia client, `/etc/kolla/config/octavia/client.cert-and-key.pem` | **11 October 2027** | Octavia's controllers talking to amphorae |
+| Ceph dashboard, `/etc/ceph/dashboard/dashboard.crt` | 14 January 2029 | HTTPS on the dashboard, every node |
 | Octavia CAs | October 2036 | Sign the above and the amphorae's certificates |
 
 Check with `openssl x509 -noout -enddate -in <file>` on `os-1`, or for Octavia:
 
 ```sh
 kolla-ansible octavia-certificates -i /etc/kolla/multinode --check-expiry 60
+```
+
+### Renew the Ceph dashboard certificate
+
+Remove it and re-run the Ceph playbook, which signs a new one and restarts
+the dashboard. On `os-1`, then from the repository:
+
+```sh
+sudo rm /etc/ceph/dashboard/dashboard.crt
+ansible-playbook ansible/ceph.yml
 ```
 
 ### Renew the public endpoint certificate

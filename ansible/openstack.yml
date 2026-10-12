@@ -77,6 +77,14 @@
         - /etc/kolla/passwords.yml
         - /etc/kolla/certificates/ca/root.crt
 
+    # Now ceph_dashboard_password in passwords.yml
+    - name: Remove the old Ceph dashboard password file
+      ansible.builtin.file:
+        path: "{{ secrets_dir }}/ceph-dashboard-password"
+        state: absent
+      delegate_to: localhost
+      become: false
+
     # kolla-genpwd writes the SSH keys as quoted strings with a blank line for
     # every newline; rewrite them as literal blocks, which read as the same
     # values, and leave the file alone if they would not
@@ -101,6 +109,7 @@
                   f.write(out)
               print('rewritten')
       delegate_to: localhost
+      become: false
       register: literal_keys
       changed_when: "'rewritten' in literal_keys.stdout"
 

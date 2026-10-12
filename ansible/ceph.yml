@@ -10,7 +10,10 @@
   vars:
     ceph_hosts: "{{ groups['openstack'] }}"
     expected_osds: "{{ ceph_hosts | length * osd_disk_count | int }}"
-    dashboard_password: "{{ lookup('ansible.builtin.password', playbook_dir ~ '/../secrets/ceph-dashboard-password', chars=['ascii_letters', 'digits'], length=20) }}"
+    # Before ceph_dashboard_password moved to passwords.yml
+    old_dashboard_password_file: "{{ playbook_dir }}/../secrets/ceph-dashboard-password"
+    dashboard_cert_dir: /etc/ceph/dashboard
+    kolla_ca_dir: /etc/kolla/certificates/private/root
     rbd_pools: [volumes, images, vms, backups]
     client_keys:
       glance: >-
@@ -43,6 +46,29 @@
       ansible.builtin.stat:
         path: /etc/ceph/ceph.conf
       register: ceph_conf
+
+    # The dashboard password lives with Kolla's; kolla-genpwd keeps entries
+    # it doesn't know
+    - name: Read the Kolla passwords
+      ansible.builtin.slurp:
+        src: /etc/kolla/passwords.yml
+      register: kolla_passwords
+      no_log: true
+
+    - name: Pick the dashboard password
+      ansible.builtin.set_fact:
+        dashboard_password: >-
+          {{ (kolla_passwords.content | b64decode | from_yaml).ceph_dashboard_password
+             | default(lookup('ansible.builtin.file', old_dashboard_password_file, errors='ignore'), true)
+             | default(lookup('ansible.builtin.password', '/dev/null', chars=['ascii_letters', 'digits'], length=20), true) }}
+      no_log: true
+
+    - name: Store the dashboard password in passwords.yml
+      ansible.builtin.lineinfile:
+        path: /etc/kolla/passwords.yml
+        regexp: "^ceph_dashboard_password:"
+        line: "ceph_dashboard_password: {{ dashboard_password }}"
+      no_log: true
 
     - name: Bootstrap the cluster
       ansible.builtin.command: >-
@@ -108,6 +134,81 @@
     - name: Enable the Prometheus exporter
       ansible.builtin.command: ceph mgr module enable prometheus
       changed_when: false
+
+    # Bootstrap only sets the password on a new cluster
+    - name: Set the dashboard password
+      ansible.builtin.command: ceph dashboard ac-user-set-password admin --force-password -i /dev/stdin
+      args:
+        stdin: "{{ dashboard_password }}"
+        stdin_add_newline: false
+      changed_when: false
+      no_log: true
+
+    # A certificate from the lab CA, which kolla-host.yml created, for every
+    # node's name and address. At most 825 days, or macOS won't trust it
+    - name: Create the dashboard certificate directory
+      ansible.builtin.file:
+        path: "{{ dashboard_cert_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Create the dashboard key
+      community.crypto.openssl_privatekey:
+        path: "{{ dashboard_cert_dir }}/dashboard.key"
+        mode: "0600"
+
+    - name: Create the dashboard certificate request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ dashboard_cert_dir }}/dashboard.key"
+        common_name: "{{ ceph_hosts[0] }}.{{ lab_net.domain }}"
+        subject_alt_name: >-
+          {{ (ceph_hosts | map('regex_replace', '$', '.' ~ lab_net.domain) | map('regex_replace', '^', 'DNS:') | list)
+             + (ceph_hosts | map('extract', hostvars, 'ansible_host') | map('regex_replace', '^', 'IP:') | list) }}
+        extended_key_usage: [serverAuth]
+      register: dashboard_csr
+      changed_when: false
+
+    - name: Sign the dashboard certificate with the lab CA
+      community.crypto.x509_certificate:
+        path: "{{ dashboard_cert_dir }}/dashboard.crt"
+        csr_content: "{{ dashboard_csr.csr }}"
+        provider: ownca
+        ownca_path: "{{ kolla_ca_dir }}/root.crt"
+        ownca_privatekey_path: "{{ kolla_ca_dir }}/root.key"
+        ownca_not_after: +825d
+        mode: "0644"
+      register: dashboard_cert
+
+    - name: Give the dashboard its certificate
+      ansible.builtin.shell: >-
+        ceph dashboard set-ssl-certificate -i {{ dashboard_cert_dir }}/dashboard.crt &&
+        ceph dashboard set-ssl-certificate-key -i {{ dashboard_cert_dir }}/dashboard.key
+      when: dashboard_cert is changed
+      changed_when: true
+
+    - name: List the managers
+      ansible.builtin.command: ceph orch ps --daemon-type mgr --format json
+      register: mgrs
+      changed_when: false
+
+    # By default a dashboard listens everywhere but calls itself by its
+    # storage address, which your machine can't reach, and a standby sends
+    # you there. Use the node's own address instead
+    - name: Serve each dashboard on its node's address
+      ansible.builtin.shell: |
+        key=mgr/dashboard/{{ item.daemon_id }}/server_addr
+        [ "$(ceph config get mgr $key)" = "{{ hostvars[item.hostname].ansible_host }}" ] && exit 0
+        ceph config set mgr $key {{ hostvars[item.hostname].ansible_host }} && echo changed
+      loop: "{{ mgrs.stdout | from_json }}"
+      loop_control:
+        label: "{{ item.daemon_name }}"
+      register: dashboard_addrs
+      changed_when: "'changed' in dashboard_addrs.stdout"
+
+    - name: Restart the dashboard
+      ansible.builtin.shell: ceph mgr module disable dashboard && ceph mgr module enable dashboard
+      when: dashboard_cert is changed or dashboard_addrs is changed
+      changed_when: true
 
     - name: Create the RBD pools
       ansible.builtin.shell: ceph osd pool create {{ item }} && rbd pool init {{ item }}

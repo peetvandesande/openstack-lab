@@ -138,8 +138,9 @@ The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
    of each Kolla-Ansible run goes to `~ubuntu/kolla-logs/`.
 
    Credentials go to `secrets/` (git-ignored): `admin-openrc.sh`,
-   `clouds.yaml`, `passwords.yml`, the lab CA `root.crt`, the Ceph dashboard
-   password and the demo customer's password.
+   `clouds.yaml`, `passwords.yml`, the lab CA `root.crt` and the demo customer's
+   password. `passwords.yml` also holds the Ceph dashboard password,
+   `ceph_dashboard_password`.
 
 ## Using the cloud
 
@@ -148,7 +149,7 @@ The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
 | Horizon | [https://api.openstack.home/](https://api.openstack.home/), user `admin`, `keystone_admin_password` from `secrets/passwords.yml` |
 | Customer login | domain `customers`, user `demo`, password in `secrets/demo-password` |
 | Grafana | [https://api.openstack.home:3000/](https://api.openstack.home:3000/) |
-| Ceph dashboard | [https://os-1.openstack.home:8443/](https://os-1.openstack.home:8443/) (or the active manager), user `admin` |
+| Ceph dashboard | [https://os-1.openstack.home:8443/](https://os-1.openstack.home:8443/) (or the active manager), user `admin`, `ceph_dashboard_password` from `secrets/passwords.yml` |
 | CLI | `ssh ubuntu@os-1.openstack.home`, then `source /opt/kolla/venv/bin/activate` and `export OS_CLOUD=kolla-admin OS_CLIENT_CONFIG_FILE=/etc/kolla/clouds.yaml` |
 
 For the CLI on your own machine, use `secrets/clouds.yaml` and trust

@@ -8,7 +8,7 @@ failures, and taking it down. See the [conventions](README.md#conventions) first
 
 ### Web interfaces
 
-Passwords are in `secrets/passwords.yml` unless noted.
+Passwords are in `secrets/passwords.yml`.
 
 | What | URL | User | Password |
 |---|---|---|---|
@@ -17,18 +17,18 @@ Passwords are in `secrets/passwords.yml` unless noted.
 | OpenSearch Dashboards | [https://api.openstack.home:5601/](https://api.openstack.home:5601/) | `opensearch` | `opensearch_dashboards_password` |
 | Alertmanager | [https://api.openstack.home:9093/](https://api.openstack.home:9093/) | `admin` | `prometheus_alertmanager_password` |
 | Prometheus | [http://192.168.32.10:9091/](http://192.168.32.10:9091/) (internal VIP only) | `admin` | `prometheus_password` |
-| Ceph dashboard | [https://os-1.openstack.home:8443/](https://os-1.openstack.home:8443/) (or the active manager) | `admin` | `secrets/ceph-dashboard-password` |
+| Ceph dashboard | [https://os-1.openstack.home:8443/](https://os-1.openstack.home:8443/) (or the active manager) | `admin` | `ceph_dashboard_password` |
 
-Your browser needs to trust `secrets/root.crt`. On macOS:
+Your browser needs to trust `secrets/root.crt`, the lab CA, which signs the
+Ceph dashboard's certificate as well. On macOS:
 
 ```sh
 sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain secrets/root.crt
 ```
 
-The Ceph dashboard has its own self-signed certificate; accept it once. If
-`os-1` isn't the active manager, the dashboard redirects you; find it with
-`sudo ceph mgr stat`.
+If `os-1` isn't the active manager, the Ceph dashboard redirects you to the
+one that is, by IP address.
 
 ### CLI on the deployment host
 
@@ -389,7 +389,6 @@ laptop's trust store first, while `secrets/root.crt` is still there.
 
    - `OS_CLOUD` and `OS_CLIENT_CONFIG_FILE` in your shell profile
    - the OpenStack client: `pipx uninstall python-openstackclient`
-   - the Ceph dashboard's certificate exception in your browser
 
 Your own SSH key (`~/.ssh/id_ed25519`) stays: the lab only copied the
 public half onto the nodes, and those are gone.
