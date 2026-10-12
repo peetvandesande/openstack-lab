@@ -5,7 +5,7 @@ building and removing it.
 
 | Manual | What's in it |
 |---|---|
-| [Operations](operations.md) | Access, starting and stopping the lab, health checks, logs, changing the configuration, recovery |
+| [Operations](operations.md) | Access, starting and stopping the lab, health checks, logs, changing the configuration, recovery, taking the lab down |
 | [Tenants](tenants.md) | Customers: domains, projects, users, roles, quotas, their networks; offboarding |
 | [Instances](instances.md) | VMs: create, access, resize, snapshot, migrate, delete; volumes, images and flavours |
 | [Networking and services](services.md) | Networks, routers, floating IPs, security groups, load balancers, DNS, object storage, secrets |

@@ -1,8 +1,8 @@
 # Operations
 
 Day-to-day running of the lab: getting in, starting and stopping it, checking
-its health, reading logs, changing the configuration and recovering from
-failures. See the [conventions](README.md#conventions) first.
+its health, reading logs, changing the configuration, recovering from
+failures, and taking it down. See the [conventions](README.md#conventions) first.
 
 ## Access
 
@@ -345,3 +345,51 @@ kolla-ansible prune-images -i /etc/kolla/multinode --yes-i-really-really-mean-it
 
 Ceph capacity: `sudo ceph df`. With 3 replicas, usable space is a third of
 raw, and Ceph stops writes at 95% full. Keep it under 80%.
+
+## Taking down the lab
+
+Removing the lab deletes `secrets/`, so take the lab CA out of your
+laptop's trust store first, while `secrets/root.crt` is still there.
+
+1. Remove the lab CA from the System keychain. Its name, `KollaTestCA`, is
+   the same for every Kolla lab, so delete it by fingerprint:
+
+   ```sh
+   sudo security remove-trusted-cert -d secrets/root.crt
+   sudo security delete-certificate -Z "$(openssl x509 -in secrets/root.crt \
+     -noout -fingerprint -sha1 | cut -d= -f2 | tr -d :)" /Library/Keychains/System.keychain
+   ```
+
+   If `secrets/` is already gone, look up the fingerprint in the keychain
+   and pass that to `-Z`:
+
+   ```sh
+   security find-certificate -a -c KollaTestCA -Z /Library/Keychains/System.keychain | grep SHA-1
+   ```
+
+2. Destroy the VMs and remove the lab from Proxmox, as in
+   [Removing the lab](../README.md#removing-the-lab):
+
+   ```sh
+   tofu destroy -var-file=secret.tfvars
+   ansible-playbook ansible/teardown.yml
+   ```
+
+   This also deletes `secrets/` (including `clouds-local.yaml`),
+   `secret.tfvars`, the Terraform state and the inventory.
+
+3. Remove the nodes' SSH host keys from `~/.ssh/known_hosts`:
+
+   ```sh
+   for h in os-1 os-2 os-3; do ssh-keygen -R $h.openstack.home; done
+   for ip in 192.168.32.1{1,2,3}; do ssh-keygen -R $ip; done
+   ```
+
+4. Clean up the rest, if you set it up:
+
+   - `OS_CLOUD` and `OS_CLIENT_CONFIG_FILE` in your shell profile
+   - the OpenStack client: `pipx uninstall python-openstackclient`
+   - the Ceph dashboard's certificate exception in your browser
+
+Your own SSH key (`~/.ssh/id_ed25519`) stays: the lab only copied the
+public half onto the nodes, and those are gone.

@@ -77,6 +77,33 @@
         - /etc/kolla/passwords.yml
         - /etc/kolla/certificates/ca/root.crt
 
+    # kolla-genpwd writes the SSH keys as quoted strings with a blank line for
+    # every newline; rewrite them as literal blocks, which read as the same
+    # values, and leave the file alone if they would not
+    - name: Write the keys in secrets/passwords.yml as literal blocks
+      ansible.builtin.command:
+        cmd: "{{ ansible_playbook_python }} - {{ secrets_dir }}/passwords.yml"
+        stdin: |
+          import sys, yaml
+          class Dumper(yaml.SafeDumper):
+              pass
+          Dumper.add_representer(str, lambda d, v: d.represent_scalar(
+              'tag:yaml.org,2002:str', v, style='|' if '\n' in v else None))
+          path = sys.argv[1]
+          with open(path) as f:
+              text = f.read()
+          data = yaml.safe_load(text)
+          out = yaml.dump(data, Dumper=Dumper, default_flow_style=False, sort_keys=False)
+          if yaml.safe_load(out) != data:
+              sys.exit('the rewritten file does not load the same; left as it is')
+          if out != text:
+              with open(path, 'w') as f:
+                  f.write(out)
+              print('rewritten')
+      delegate_to: localhost
+      register: literal_keys
+      changed_when: "'rewritten' in literal_keys.stdout"
+
     - name: Done
       ansible.builtin.debug:
         msg:
