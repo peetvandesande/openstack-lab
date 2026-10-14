@@ -82,7 +82,8 @@ MariaDB Galera then has no member left to rejoin and needs a recovery step.
      | xargs -r -n1 openstack server stop
    ```
 
-2. Stop Ceph rebalancing while nodes go down:
+2. Stop Ceph rebalancing while nodes go down. `noout` is a cluster-wide flag,
+   so set it once, on any node (`os-1` is simplest):
 
    ```sh
    sudo ceph osd set noout
@@ -113,7 +114,8 @@ MariaDB Galera then has no member left to rejoin and needs a recovery step.
    This finds the node with the most recent data, bootstraps the cluster from
    it and starts the others. It is safe to run when unsure.
 
-3. Let Ceph rebalance again:
+3. Let Ceph rebalance again, once `sudo ceph -s` shows all OSDs up (again
+   once, on any node):
 
    ```sh
    sudo ceph osd unset noout
@@ -134,7 +136,8 @@ MariaDB Galera then has no member left to rejoin and needs a recovery step.
 Fine at any time; the other two carry the control plane, and keepalived moves
 the VIPs. Move the instances off it first if they matter, as in
 [Patching the nodes](updates.md#patching-the-node-os). Set `noout` for the
-duration, so Ceph doesn't start copying the node's data elsewhere:
+duration, so Ceph doesn't start copying the node's data elsewhere. The flag is
+cluster-wide, so set and unset it on any node:
 
 ```sh
 sudo ceph osd set noout

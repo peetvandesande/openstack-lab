@@ -72,7 +72,8 @@ For each of `os-3`, `os-2` and then `os-1`:
 
    Skipping this is fine for a lab; the instances then restart with the node.
 
-2. **Tell Ceph not to rebalance**:
+2. **Tell Ceph not to rebalance**. `noout` is a cluster-wide flag, so run this
+   once, on any node:
 
    ```sh
    sudo ceph osd set noout
