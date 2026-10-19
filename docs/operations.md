@@ -130,8 +130,24 @@ HAProxy drops those unhealthy backends, so the first thing you see is
 `503 Service Unavailable: No server is available to handle this request` from
 `api.openstack.home`, whichever service you ask for.
 
-Work through the steps in order and check each one before moving on. Steps 1
-to 4 build the foundation; step 5 is where the control plane comes back.
+`ansible/recover.yml` does steps 2 to 6 for you, from the repository on your
+own machine:
+
+```sh
+ansible-playbook ansible/recover.yml
+```
+
+It checks each layer before touching the next and stops with a message
+naming the layer that is wrong, so a failed run tells you which step below
+to read. It is safe to re-run, and safe on a healthy lab: Galera is only
+recovered when it isn't already in a primary cluster of three, `noout` only
+unset when it is set, and containers only restarted when they are unhealthy.
+Use `--tags preflight,verify` for a read-only look, or `--tags ceph,db,rabbit`
+and `--tags containers` to take it a layer at a time.
+
+The steps below are the same thing by hand. Work through them in order and
+check each one before moving on: steps 1 to 4 build the foundation, step 5 is
+where the control plane comes back.
 
 1. **Start the nodes.** On lenora:
 

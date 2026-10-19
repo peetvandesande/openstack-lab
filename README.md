@@ -174,6 +174,11 @@ generates, or from `MAILCOW_API_KEY` in the environment. Set `MAILCOW_API=`
 For the CLI on your own machine, use `secrets/clouds.yaml` and trust
 `secrets/root.crt`.
 
+After a full stop of all three nodes, the cloud does not come back on its
+own — Galera will not bootstrap itself and the API services never retry their
+database connection. `ansible-playbook ansible/recover.yml` checks each layer
+and restarts what is stuck; [Start](docs/operations.md#start) explains why.
+
 The [manuals](docs/README.md) cover running the cloud: customers,
 instances, networking and services, containers, operations and updates.
 

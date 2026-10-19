@@ -1,0 +1,299 @@
+# Brings the control plane back after a full stop. A cold start never
+# completes on its own: Galera will not bootstrap when all three nodes stop
+# at once, and the API services run under uwsgi, which loads its application
+# once and then serves errors for ever, so nothing restarts them. See
+# docs/operations.md#start for the manual version of each step.
+#
+# Run on its own, after the nodes are up; not imported by site.yml. Safe to
+# re-run, and safe to run on a healthy lab: every step checks first and only
+# acts on what is actually broken.
+
+- name: Check the nodes are up and named right
+  hosts: openstack
+  gather_facts: false
+  tags: preflight
+  tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    # Kolla needs the short name to resolve to the node's own management
+    # address. Cloud-init used to take /etc/hosts over at boot, which breaks
+    # RabbitMQ (epmd) and the libvirt SASL realm in unrelated-looking ways
+    - name: Check the node's own name resolves to its management address
+      ansible.builtin.command: getent ahostsv4 {{ inventory_hostname }}
+      register: own_name
+      changed_when: false
+
+    - name: Fail if it does not
+      ansible.builtin.assert:
+        that: mgmt_ip in own_name.stdout
+        fail_msg: >-
+          {{ inventory_hostname }} resolves to "{{ own_name.stdout_lines | first | default('nothing') }}"
+          instead of {{ mgmt_ip }}. Fix this first: see docs/operations.md#hostnames.
+
+- name: Recover the storage and the database
+  hosts: openstack[0]
+  gather_facts: false
+  tasks:
+    - name: Wait for all the OSDs to come up
+      ansible.builtin.command: ceph osd stat --format json
+      register: osd_stat
+      changed_when: false
+      until: (osd_stat.stdout | from_json).num_osds == (osd_stat.stdout | from_json).num_up_osds
+      retries: 30
+      delay: 20
+      become: true
+      tags: ceph
+
+    - name: Read the OSD flags
+      ansible.builtin.command: ceph osd dump --format json
+      register: osd_dump
+      changed_when: false
+      become: true
+      tags: ceph
+
+    # Set before the shutdown so Ceph does not copy a stopped node's data
+    # elsewhere; it has to come off again or a real disk failure is never
+    # repaired
+    - name: Let Ceph rebalance again
+      when: "'noout' in ((osd_dump.stdout | from_json).flags_set | default([]))"
+      ansible.builtin.command: ceph osd unset noout
+      changed_when: true
+      become: true
+      tags: ceph
+
+    - name: Read the database password
+      ansible.builtin.slurp:
+        src: /etc/kolla/passwords.yml
+      register: passwords
+      no_log: true
+      tags: db
+
+    - name: Ask Galera how it is doing
+      vars:
+        wsrep_query: >-
+          SHOW STATUS WHERE Variable_name IN
+          ('wsrep_cluster_size', 'wsrep_cluster_status', 'wsrep_local_state_comment')
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - mariadb
+          - mariadb
+          - -uroot
+          - -p{{ (passwords.content | b64decode | from_yaml).database_password }}
+          - -e
+          - "{{ wsrep_query }}"
+      register: galera
+      changed_when: false
+      failed_when: false
+      no_log: true
+      become: true
+      tags: db
+
+    - name: Report what it said
+      ansible.builtin.debug:
+        msg: "{{ 'Galera is up' if galera_ok else 'Galera needs recovering' }}"
+      vars:
+        galera_ok: "{{ galera.rc == 0 and 'Synced' in galera.stdout
+                       and galera.stdout is search('wsrep_cluster_size\\s+3') }}"
+      tags: db
+
+    # Finds the node with the most recent data, bootstraps from it and starts
+    # the others. Expected after every full stop, because a simultaneous stop
+    # leaves no node holding safe_to_bootstrap
+    - name: Recover Galera
+      when: not (galera.rc == 0 and 'Synced' in galera.stdout
+                 and galera.stdout is search('wsrep_cluster_size\\s+3'))
+      ansible.builtin.include_tasks: tasks/kolla.yml
+      vars:
+        kolla_action: mariadb-recovery
+      tags: db
+
+    - name: Check Galera is in one primary cluster of three
+      vars:
+        wsrep_query: >-
+          SHOW STATUS WHERE Variable_name IN
+          ('wsrep_cluster_size', 'wsrep_cluster_status', 'wsrep_local_state_comment')
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - mariadb
+          - mariadb
+          - -uroot
+          - -p{{ (passwords.content | b64decode | from_yaml).database_password }}
+          - -e
+          - "{{ wsrep_query }}"
+      register: galera_now
+      changed_when: false
+      until: galera_now.rc == 0 and 'Synced' in galera_now.stdout
+             and 'Primary' in galera_now.stdout
+             and galera_now.stdout is search('wsrep_cluster_size\\s+3')
+      retries: 10
+      delay: 20
+      no_log: true
+      become: true
+      tags: db
+
+    - name: Check RabbitMQ has all three nodes and no partitions
+      ansible.builtin.command: docker exec rabbitmq rabbitmqctl -q cluster_status
+      register: rabbit
+      changed_when: false
+      until: rabbit.rc == 0 and (rabbit.stdout | regex_findall('rabbit@os-[123]') | unique | length) == 3
+      retries: 10
+      delay: 20
+      become: true
+      tags: rabbit
+
+    # The *_fanout queues are streams, which rabbitmq-queues grow does not
+    # replicate; a repaired or rebuilt node leaves them short
+    - name: Look for streams that lost a replica
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          docker exec rabbitmq rabbitmqctl -q list_queues name type members
+          | awk -F'\t' '$2 == "stream" && ($3 !~ /os-1/ || $3 !~ /os-2/ || $3 !~ /os-3/) {print $1}'
+        executable: /bin/bash
+      register: thin_streams
+      changed_when: false
+      become: true
+      tags: rabbit
+
+    - name: Say which ones
+      when: thin_streams.stdout_lines | length > 0
+      ansible.builtin.debug:
+        msg: >-
+          {{ thin_streams.stdout_lines | length }} stream queue(s) are short of a replica
+          ({{ thin_streams.stdout_lines | join(', ') }}). Services consuming them fail with
+          PRECONDITION_FAILED; see docs/operations.md#under-replicated-stream-queues.
+      tags: rabbit
+
+- name: Restart the services that started before the database
+  hosts: openstack
+  gather_facts: false
+  become: true
+  tags: containers
+  tasks:
+    # Nova's conductor and scheduler crash-loop until placement answers, and
+    # recover by themselves once it does, so this is the only one that needs
+    # to go first
+    - name: Restart placement
+      ansible.builtin.command: docker restart placement_api
+      changed_when: true
+
+    # Restart whatever is unhealthy, then wait for the lot to settle: a
+    # container that came up while its own dependency was still restarting
+    # needs another pass. Counting "starting" too, so the wait does not end
+    # the moment a restart clears the unhealthy flag
+    - name: Restart the unhealthy containers until none are left
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          ids=$(docker ps --filter health=unhealthy -q)
+          if [ -n "$ids" ]; then docker restart $ids >/dev/null; fi
+          { docker ps --filter health=unhealthy -q; docker ps --filter health=starting -q; } | wc -l
+        executable: /bin/bash
+      register: unsettled
+      changed_when: false
+      until: unsettled.stdout | trim | int == 0
+      retries: 10
+      delay: 30
+
+    # A container that exits is retried for ever by its unit, but one systemd
+    # has given up on stays down
+    - name: Start the container units that are not running
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          for u in $(systemctl list-units 'kolla-*-container.service' --all --plain --no-legend | awk '{print $1}'); do
+            if ! systemctl is-active -q "$u"; then
+              systemctl reset-failed "$u"
+              systemctl start "$u" && echo "$u"
+            fi
+          done
+        executable: /bin/bash
+      register: started_units
+      changed_when: started_units.stdout_lines | length > 0
+
+- name: Check the services from the API side
+  hosts: openstack[0]
+  gather_facts: false
+  tags: verify
+  vars:
+    os: "{{ kolla_venv }}/bin/openstack --os-cloud kolla-admin"
+  environment:
+    OS_CLIENT_CONFIG_FILE: /etc/kolla/clouds.yaml
+  tasks:
+    # Container health only says the process answers locally; these lists are
+    # written by the services themselves, so they prove the message bus and
+    # the database are reachable too
+    - name: Ask nova which of its services are up
+      ansible.builtin.command: "{{ os }} compute service list -f json"
+      register: compute
+      changed_when: false
+      until: compute.rc == 0
+      retries: 10
+      delay: 20
+
+    - name: Note the nodes whose nova-compute is down
+      ansible.builtin.set_fact:
+        computes_down: >-
+          {{ compute.stdout | from_json
+             | selectattr('Binary', 'equalto', 'nova-compute')
+             | rejectattr('State', 'equalto', 'up')
+             | map(attribute='Host') | list }}
+
+- name: Give nova-compute its hypervisor back
+  hosts: openstack
+  gather_facts: false
+  become: true
+  tags: verify
+  tasks:
+    # nova-compute exits when libvirt is not ready at start-up, and its own
+    # shutdown then fails, which can leave the process up but doing nothing
+    - name: Restart libvirt and nova-compute
+      when: inventory_hostname in (hostvars[groups['openstack'] | first].computes_down | default([]))
+      ansible.builtin.command: docker restart {{ item }}
+      loop: [nova_libvirt, nova_compute]
+      changed_when: true
+
+- name: Confirm the cloud is back
+  hosts: openstack[0]
+  gather_facts: false
+  tags: verify
+  vars:
+    os: "{{ kolla_venv }}/bin/openstack --os-cloud kolla-admin"
+  environment:
+    OS_CLIENT_CONFIG_FILE: /etc/kolla/clouds.yaml
+  tasks:
+    - name: Wait for every service to report up
+      ansible.builtin.command: "{{ os }} {{ item.cmd }} -f json"
+      register: services
+      changed_when: false
+      until: services.rc == 0 and (services.stdout | from_json | rejectattr(item.field, 'in', item.up) | list | length) == 0
+      retries: 10
+      delay: 30
+      loop:
+        - { cmd: "compute service list", field: State, up: [up] }
+        - { cmd: "network agent list", field: Alive, up: [true, "true", ":-)"] }
+        - { cmd: "volume service list", field: State, up: [up] }
+        - { cmd: "orchestration service list", field: Status, up: [up, active] }
+        - { cmd: "dns service list", field: status, up: [UP] }
+      loop_control:
+        label: "{{ item.cmd }}"
+
+    - name: Check Ceph is healthy
+      ansible.builtin.command: ceph health
+      register: ceph_health
+      changed_when: false
+      failed_when: "'HEALTH_ERR' in ceph_health.stdout"
+      become: true
+
+    - name: Where it stands
+      ansible.builtin.debug:
+        msg:
+          - "Ceph: {{ ceph_health.stdout }}"
+          - "All OpenStack services report up. Instances are still off; start them with"
+          - "openstack server list --all-projects --status SHUTOFF"
