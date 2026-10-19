@@ -34,6 +34,16 @@
         content: "manage_etc_hosts: false\n"
         mode: "0644"
 
+    # The Proxmox user data sets manage_etc_hosts, and user data outranks
+    # cloud.cfg.d, so the file above is not enough: drop the module as well.
+    # Without this, every boot wipes the entries Kolla puts in /etc/hosts,
+    # which breaks RabbitMQ (epmd) and the libvirt SASL realm.
+    - name: Stop cloud-init rewriting /etc/hosts at boot
+      ansible.builtin.lineinfile:
+        path: /etc/cloud/cloud.cfg
+        regexp: '^\s*-\s+update_etc_hosts\s*$'
+        state: absent
+
     - name: Remove the loopback entry for the hostname
       ansible.builtin.lineinfile:
         path: /etc/hosts

@@ -122,7 +122,10 @@ MariaDB Galera then has no member left to rejoin and needs a recovery step.
    ```
 
 4. Run the [health checks](#health-checks). If RabbitMQ is in a bad state, see
-   [Recovery](#rabbitmq).
+   [Recovery](#rabbitmq); if several services are down at once, start with
+   [Hostnames](#hostnames). Containers whose API worker started before MariaDB
+   was recovered stay broken (`no python application found` in their uwsgi
+   log) and need a `docker restart`.
 
 5. Start the instances that should run:
 
@@ -308,6 +311,23 @@ If Galera has lost quorum (after a full stop, or two nodes failing), run
 `kolla-ansible mariadb-recovery -i /etc/kolla/multinode`. A single node that
 won't rejoin usually recovers with `sudo docker restart mariadb` on that
 node.
+
+### Hostnames
+
+Symptoms after a boot: RabbitMQ won't start (`epmd error for host os-1:
+address`), and nova-compute dies with `authentication failed` against
+libvirt. Both mean the node's own short name no longer resolves to its
+management address. Kolla keeps those entries in `/etc/hosts`; cloud-init
+rewrites the file at boot if the `update_etc_hosts` module is still enabled,
+which `ansible/nodes.yml` disables. Check and restore:
+
+```sh
+ansible -i /etc/kolla/multinode control -m shell -a 'getent ahostsv4 $(hostname) | head -1'
+```
+
+Each node must answer with its own `192.168.32.x` address and the short name.
+If not, re-run `ansible/nodes.yml` and `ansible/kolla-host.yml`, then restart
+`rabbitmq`, `nova_libvirt` and `nova_compute` on every node.
 
 ### RabbitMQ
 
