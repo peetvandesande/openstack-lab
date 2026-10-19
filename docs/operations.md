@@ -98,50 +98,157 @@ MariaDB Galera then has no member left to rejoin and needs a recovery step.
 
 ### Start
 
-1. On lenora:
+A cold start never comes back on its own. Three things are true of this
+deployment, and together they mean every full stop needs the sequence below.
+
+* **Galera cannot bootstrap itself.** When all three nodes stop at once,
+  none of them is left holding `safe_to_bootstrap: 1` in
+  `/var/lib/docker/volumes/mariadb/_data/grastate.dat` (an unclean stop also
+  leaves `seqno: -1`), so no node will form the cluster on its own. That is
+  Galera refusing to risk a split brain, not a fault. Until you recover it,
+  nothing that needs the database works.
+* **Nothing is ordered.** Kolla manages each container with its own
+  `kolla-<container>-container.service` unit, and every one of the 81 units
+  only says `After=docker.service`. So on boot, all of them start at once,
+  long before MariaDB is usable.
+* **Two failure behaviours follow from that**, and only one of them heals:
+  * Services that **exit** on failure are restarted for ever
+    (`Restart=always`, `RestartSec=11`). `nova_conductor` and
+    `nova_scheduler` crash-loop while placement is down, with restart
+    counters in the hundreds, and come back by themselves once it answers.
+  * The **API services never exit**. They all run under uwsgi
+    (`placement_api`, `nova_api`, `nova_metadata`, `cinder_api`,
+    `neutron_server`, `barbican_api`, `octavia_api`), which loads the
+    application once: the database error leaves it with `no python
+    application found` in `/var/log/kolla/<service>/*-uwsgi.log`, and the
+    master process keeps answering HTTP 500 for ever. Docker marks the
+    container unhealthy, but because the process is still running, neither
+    Docker nor systemd ever restarts it. **These need restarting by hand** —
+    that is step 5.
+
+HAProxy drops those unhealthy backends, so the first thing you see is
+`503 Service Unavailable: No server is available to handle this request` from
+`api.openstack.home`, whichever service you ask for.
+
+Work through the steps in order and check each one before moving on. Steps 1
+to 4 build the foundation; step 5 is where the control plane comes back.
+
+1. **Start the nodes.** On lenora:
 
    ```sh
    for id in 9201 9202 9203; do qm start $id; done
    ```
 
-2. Give the nodes a few minutes, then check MariaDB. After a full stop it
-   almost always needs recovering:
+   Wait until all three answer SSH. Everything below runs on `os-1`.
+
+2. **Check the hostnames.** Kolla needs each node's short name to resolve to
+   its own management address; if cloud-init has taken `/etc/hosts` over
+   again, RabbitMQ and libvirt both break in confusing ways.
+
+   ```sh
+   ansible -i /etc/kolla/multinode control -m shell -a 'getent ahostsv4 $(hostname) | head -1'
+   ```
+
+   Each node must answer with its own `192.168.32.x` address and its short
+   name — not `127.0.1.1`, not the FQDN. If it doesn't, fix it before going
+   on: see [Hostnames](#hostnames).
+
+3. **Check Ceph, then let it rebalance again.**
+
+   ```sh
+   sudo ceph -s                  # wait for 6 osds: 6 up, 6 in
+   sudo ceph osd unset noout     # cluster-wide, so once, on any node
+   sudo ceph health              # HEALTH_OK
+   ```
+
+4. **Recover the database.** This is the step the rest depends on:
 
    ```sh
    kolla-ansible mariadb-recovery -i /etc/kolla/multinode
    ```
 
-   This finds the node with the most recent data, bootstraps the cluster from
-   it and starts the others. It is safe to run when unsure.
+   It finds the node with the most recent data, bootstraps the cluster from it
+   and starts the others. It is safe to run when unsure. Then confirm all
+   three are in one primary cluster, with the [Galera
+   check](#galera-status) — cluster size 3, `Primary`, `Synced`. Don't carry
+   on until it says that.
 
-3. Let Ceph rebalance again, once `sudo ceph -s` shows all OSDs up (again
-   once, on any node):
+   Check RabbitMQ too, with the [RabbitMQ check](#rabbitmq-status): three
+   running nodes and no partitions. It normally survives a cold start by
+   itself, now that the hostnames stay put.
 
-   ```sh
-   sudo ceph osd unset noout
-   ```
-
-4. Run the [health checks](#health-checks). If RabbitMQ is in a bad state, see
-   [Recovery](#rabbitmq); if several services are down at once, start with
-   [Hostnames](#hostnames). Containers whose API worker started before MariaDB
-   was recovered stay broken (`no python application found` in their uwsgi
-   log) and need a restart:
+5. **Restart everything that started too early.** Begin with placement,
+   because nova's conductor and scheduler crash-loop until it answers, then
+   sweep up whatever else is still unhealthy:
 
    ```sh
+   ansible -i /etc/kolla/multinode control -m shell -f 1 -a "docker restart placement_api"
+
    ansible -i /etc/kolla/multinode control -m shell -f 1 -a \
-     "docker ps --filter health=unhealthy --format '{{.Names}}' | xargs -r docker restart"
+     "docker ps --filter health=unhealthy -q | xargs -r docker restart"
    ```
 
-   Restart `placement_api` first if it is among them: nova's conductor and
-   scheduler crash-loop until placement answers. If a service still times out
-   on RPC afterwards, see [A poisoned quorum queue](#a-poisoned-quorum-queue).
+   Give it a minute and repeat the sweep until it reports nothing: a
+   container can need a second pass if it came up while its own dependency
+   was still restarting. Then check nothing is left behind:
 
-5. Start the instances that should run:
+   ```sh
+   ansible -i /etc/kolla/multinode control -m shell \
+     -a "docker ps -a | grep -E 'unhealthy|Exited|Restarting' || true"
+   ```
+
+6. **Verify from the API side.** Container health only says the process
+   answers locally; these lists are written by the services themselves and
+   prove they reached both the message bus and the database:
+
+   ```sh
+   openstack compute service list        # all up, including nova-compute on all three
+   openstack network agent list
+   openstack volume service list
+   openstack orchestration service list
+   openstack dns service list
+   ```
+
+   If `nova-compute` is `down` on a node while its container looks healthy,
+   it lost libvirt at start-up: restart `nova_libvirt`, then `nova_compute`,
+   on that node. If a service logs `Timed out waiting for nova-conductor`
+   while the conductors are up, see
+   [A poisoned quorum queue](#a-poisoned-quorum-queue).
+
+7. **Start the instances that should run:**
 
    ```sh
    openstack server list --all-projects --status SHUTOFF
    openstack server start <server> [<server> ...]
    ```
+
+### What the symptom tells you
+
+| Symptom | Cause | Go to |
+|---|---|---|
+| `503 ... No server is available` from `api.openstack.home` | HAProxy has no healthy backend for that service | Start step 5 |
+| `Max connect timeout reached while reaching hostgroup 0` in a service log | ProxySQL can't reach MariaDB: Galera is not up | Start step 4 |
+| `no python application found` in a `*-uwsgi.log` | The worker started before the database; it will never retry | Start step 5 |
+| `The placement service ... does not have any supported versions` | `placement_api` is stuck, so conductor and scheduler crash-loop | Restart `placement_api`, then re-check |
+| `epmd error for host os-X: address` in the RabbitMQ log | The node's short name doesn't resolve to its management address | [Hostnames](#hostnames) |
+| `authentication failed` from libvirt, `nova-compute` down | Same hostname problem: the SASL realm no longer matches `nova@os-X` | [Hostnames](#hostnames) |
+| `Timed out waiting for nova-conductor` while conductors are up | A diverged quorum queue that RabbitMQ won't deliver to | [A poisoned quorum queue](#a-poisoned-quorum-queue) |
+| `PRECONDITION_FAILED - stream queue ... does not have a running replica` | A `*_fanout` stream lost its replicas | [Under-replicated stream queues](#under-replicated-stream-queues) |
+| A container restarting over and over | Its dependency is still down; it will recover on its own | Fix the dependency first |
+| A container `Up` but `(unhealthy)` for ages | Nothing will ever restart it | Restart it by hand |
+
+To see it from the systemd side on a node:
+
+```sh
+systemctl list-units 'kolla-*-container.service' --all --no-legend | grep -vE 'active +running'
+systemctl show kolla-nova_scheduler-container.service -p NRestarts
+journalctl -u kolla-nova_scheduler-container.service -n 50
+sudo docker inspect --format '{{.State.Health.Status}}' nova_api
+```
+
+A high `NRestarts` is the signature of a service waiting for a dependency; a
+container that is unhealthy with no restarts at all is the signature of a
+stuck uwsgi worker.
 
 ### Rebooting one node
 
@@ -172,6 +279,10 @@ openstack loadbalancer amphora list
 # Containers that are unhealthy, stopped or restarting, on every node
 ansible -i /etc/kolla/multinode control -m shell \
   -a "docker ps -a | grep -E 'unhealthy|Exited|Restarting' || true"
+
+# Units systemd is retrying or has given up on, on every node
+ansible -i /etc/kolla/multinode control -m shell \
+  -a "systemctl list-units 'kolla-*-container.service' --all --no-legend | grep -vE 'active +running' || true"
 
 # Ceph
 sudo ceph -s
@@ -255,6 +366,25 @@ Kolla-Ansible do it:
 kolla-ansible deploy-containers -i /etc/kolla/multinode -t nova
 ```
 
+Each container also has a systemd unit, `kolla-<container>-container.service`,
+which is what starts it at boot and restarts it when it exits. That is the
+layer to look at when a container is missing rather than unhealthy:
+
+```sh
+systemctl status kolla-nova_api-container.service
+sudo systemctl restart kolla-nova_api-container.service   # same as docker restart
+```
+
+Turning a service off leaves its unit behind, permanently `failed`, which
+clutters the checks. Remove it on every node:
+
+```sh
+ansible -i /etc/kolla/multinode control -m shell -b -a \
+  "systemctl disable --now kolla-prometheus_cadvisor-container.service;
+   rm -f /etc/systemd/system/kolla-prometheus_cadvisor-container.service;
+   systemctl daemon-reload; systemctl reset-failed"
+```
+
 Don't change files inside containers: Kolla regenerates their configuration
 on every deploy. Change the configuration as below instead.
 
@@ -320,6 +450,22 @@ If Galera has lost quorum (after a full stop, or two nodes failing), run
 `kolla-ansible mariadb-recovery -i /etc/kolla/multinode`. A single node that
 won't rejoin usually recovers with `sudo docker restart mariadb` on that
 node.
+
+Why it can't do this by itself: each node records what it knows in
+`/var/lib/docker/volumes/mariadb/_data/grastate.dat`.
+
+```sh
+ansible -i /etc/kolla/multinode control -m shell \
+  -a "cat /var/lib/docker/volumes/mariadb/_data/grastate.dat"
+```
+
+After a graceful, staggered shutdown the last node to stop has
+`safe_to_bootstrap: 1` and starts the cluster again on its own. After a
+simultaneous stop every node has `safe_to_bootstrap: 0`, and an unclean one
+also leaves `seqno: -1`, meaning "I don't know how far I got". No node will
+then bootstrap, because the wrong choice loses writes — which is what
+`mariadb-recovery` decides for you, by comparing the nodes' recovered
+positions. Expect to run it after every full stop.
 
 ### Hostnames
 
@@ -403,6 +549,29 @@ used it. Finally check no queue is short of a replica:
 
 ```sh
 sudo docker exec rabbitmq rabbitmqctl list_queues name type members
+```
+
+### Under-replicated stream queues
+
+Symptom: a service loops on `Unable to connect to AMQP server ... (406)
+PRECONDITION_FAILED - stream queue '<name>_fanout' in vhost '/' does not have
+a running replica on the local node`, and its container stays unhealthy.
+
+The `*_fanout` queues are streams, not quorum queues, and they are replicated
+separately: `rabbitmq-queues grow` does not touch them, so they stay
+one-replica after a node has been shrunk out, reset or rebuilt. A client that
+then connects to a node without a replica cannot consume. Count the replicas:
+
+```sh
+sudo docker exec rabbitmq rabbitmqctl list_queues name type members \
+  | awk -F'\t' '$2=="stream"'
+```
+
+Every stream should list all three nodes. Add the missing ones, then restart
+the services that were looping:
+
+```sh
+sudo docker exec rabbitmq rabbitmq-streams add_replica '<name>_fanout' rabbit@os-2
 ```
 
 ### Ceph
