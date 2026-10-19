@@ -125,7 +125,16 @@ MariaDB Galera then has no member left to rejoin and needs a recovery step.
    [Recovery](#rabbitmq); if several services are down at once, start with
    [Hostnames](#hostnames). Containers whose API worker started before MariaDB
    was recovered stay broken (`no python application found` in their uwsgi
-   log) and need a `docker restart`.
+   log) and need a restart:
+
+   ```sh
+   ansible -i /etc/kolla/multinode control -m shell -f 1 -a \
+     "docker ps --filter health=unhealthy --format '{{.Names}}' | xargs -r docker restart"
+   ```
+
+   Restart `placement_api` first if it is among them: nova's conductor and
+   scheduler crash-loop until placement answers. If a service still times out
+   on RPC afterwards, see [A poisoned quorum queue](#a-poisoned-quorum-queue).
 
 5. Start the instances that should run:
 
@@ -344,6 +353,56 @@ services then need restarting too:
 ```sh
 kolla-ansible rabbitmq-reset-state -i /etc/kolla/multinode
 kolla-ansible deploy-containers -i /etc/kolla/multinode
+```
+
+### A poisoned quorum queue
+
+Symptoms: a service keeps logging `Timed out waiting for nova-conductor`
+while every container looks healthy, and the RabbitMQ log on another node
+repeats `operation basic.publish caused a connection exception
+resource_error`, with a Ra crash in the detail (`{case_clause,undefined}` or
+`PrevIdx < SnapIdx` in `ra_server`). One queue's Raft members have diverged,
+usually a `reply_*` queue left behind by a crash loop. Find it from the
+publish error, then look at its members:
+
+```sh
+sudo docker exec rabbitmq rabbitmq-queues quorum_status 'reply_os-1:nova-compute:1'
+```
+
+A member in `noproc`/`unknown`, or a last log index far ahead of the leader's,
+is the broken one. The queues only hold RPC replies, so deleting them is
+safe; the clients redeclare them:
+
+```sh
+sudo docker exec rabbitmq rabbitmqctl delete_queue 'reply_os-1:nova-compute:1'
+```
+
+If that fails with the same Ra crash, drop the replicas on the node holding
+the bad member and put them back afterwards:
+
+```sh
+sudo docker exec rabbitmq rabbitmq-queues shrink rabbit@os-3   # then delete_queue
+sudo docker exec rabbitmq rabbitmq-queues grow rabbit@os-3 all
+```
+
+If it still fails, the stale Raft log is on disk on the node whose member has
+diverged. `rabbitmqctl reset` does not clear it. Stop RabbitMQ on that node
+only — the other two keep serving — move the queue's directory aside and
+start it again:
+
+```sh
+Q=/var/lib/docker/volumes/rabbitmq/_data/mnesia/rabbit@os-1/quorum/rabbit@os-1
+sudo docker exec rabbitmq sh -c "cd $Q && grep -al 'reply_os-2:nova-compute:1' 2F_REP*/*"
+sudo docker stop rabbitmq
+sudo mv $Q/<dir> /var/tmp/              # the directory from the grep
+sudo docker start rabbitmq
+```
+
+Then delete the queue, `grow` the replicas back and restart the services that
+used it. Finally check no queue is short of a replica:
+
+```sh
+sudo docker exec rabbitmq rabbitmqctl list_queues name type members
 ```
 
 ### Ceph
