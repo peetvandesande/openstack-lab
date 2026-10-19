@@ -1,9 +1,10 @@
 # Day-2 configuration a provider does before handing out projects: the
 # public network, flavours, images, the Octavia amphora image, a volume type
 # and one onboarded customer. Runs on the deployment host with the
-# OpenStack SDK from the Kolla virtualenv. The customer's mail domain and
-# mailboxes on hermes are created from the Proxmox host, the only address
-# mailcow's API accepts. Imported by site.yml; safe to re-run.
+# OpenStack SDK from the Kolla virtualenv. The customer's DNS zone, mail
+# domain and mailboxes on hermes are created from the Proxmox host, the only
+# address the PowerDNS and mailcow APIs accept. Imported by site.yml; safe to
+# re-run.
 
 - name: Read the lab settings
   hosts: localhost
@@ -213,12 +214,21 @@
 
 # group_vars only reach the nodes; the Proxmox host reads customer from the
 # file itself
-- name: Customer mail
+- name: Customer DNS and mail
   hosts: proxmox
   gather_facts: false
   vars_files:
     - group_vars/openstack.yml
   tasks:
+    # The zone for the mail domain, so the cloud can find hermes for it. The
+    # bootstrap registers it too; this way a change of customer.mail.domain
+    # needs no more than a re-run of this playbook
+    - name: Register the customer's mail domain in DNS
+      ansible.builtin.include_tasks: tasks/dns.yml
+      vars:
+        dns_state: present
+      when: lab_net.pdns_api | default('') | length > 0
+
     - name: Create the customer's mailboxes
       ansible.builtin.include_tasks: tasks/mail.yml
       vars:

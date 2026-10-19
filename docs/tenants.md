@@ -111,9 +111,12 @@ project. Quotas are under the project's dropdown → Modify Quotas.
 `ansible/group_vars/openstack.yml`. Change those values and re-run it to
 onboard another; the earlier customer stays. Only the steps above are done,
 with the password written to `secrets/<user>-password`, plus a mail domain
-and mailboxes on hermes (`customer.mail`, see [Mail](../README.md#mail)).
-The teardown removes only the mail domain of the customer configured at the
-time.
+and mailboxes on hermes (`customer.mail`, see [Mail](../README.md#mail)), and
+a DNS zone for that domain with an MX for hermes. Keep the domain under
+`example.`: the LAN's resolver forwards the whole reserved TLD to the lab's
+PowerDNS, so any other domain resolves nowhere and the cloud's mail to the
+customer bounces. The teardown removes only the mail domain of the customer
+configured at the time, and its zone.
 
 ## Give the customer a clouds.yaml
 

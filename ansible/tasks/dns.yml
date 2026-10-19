@@ -1,14 +1,21 @@
 # Registers the lab's names in PowerDNS (dns_state: present) or removes them
 # (dns_state: absent). Runs on the Proxmox host, which may reach the API;
-# needs lab, lab_net and pdns_api_key. One forward zone (DOMAIN) and the
-# reverse zones of the management and API networks, all owned by the lab:
-# records in them that the lab no longer wants are deleted.
+# needs lab, lab_net, pdns_api_key and customer. One forward zone (DOMAIN),
+# the reverse zones of the management and API networks, and the customer's
+# mail domain, all owned by the lab: records in them that the lab no longer
+# wants are deleted.
 #
 # Names:
 #   <prefix>-<n>.DOMAIN   management address of each node (+ PTR)
 #   api.DOMAIN            external VIP: public endpoints, Horizon (+ PTR)
 #   api-int.DOMAIN        internal VIP (+ PTR)
 #   ns1.DOMAIN            the nodes' API addresses, where Designate's BIND listens
+#
+# Plus, when mail is configured, a zone for the customer's mail domain with an
+# MX for hermes: the cloud resolves it through the LAN's resolver, and without
+# it mail to the customer bounces as a domain nobody hosts. The reserved
+# example. TLD is forwarded to this server as a whole (see homelab/dns), so a
+# customer domain needs no change on the resolver.
 - name: Check the networks are /24s
   ansible.builtin.assert:
     that: lab_net[item].endswith('/24')
@@ -24,6 +31,7 @@
     mgmt: "{{ lab_net.mgmt_subnet.split('/')[0].rsplit('.', 1)[0] }}"
     api: "{{ lab_net.api_subnet.split('/')[0].rsplit('.', 1)[0] }}"
     first: "{{ lab_net.node_host_start | int }}"
+    mailhost: "{{ lab_net.mailcow_api | default('') | urlsplit('hostname') }}"
     vip: "{{ lab_net.vip_host | int }}"
     nodes: "{{ range(lab.node_count | int) | list }}"
     zones: |
@@ -35,6 +43,12 @@
           - { name: "api.{{ domain }}", type: A, records: ["{{ api }}.{{ vip }}"] }
           - { name: "api-int.{{ domain }}", type: A, records: ["{{ mgmt }}.{{ vip }}"] }
           - { name: "ns1.{{ domain }}", type: A, records: [{% for i in nodes %}"{{ api }}.{{ first | int + i }}"{{ ', ' if not loop.last }}{% endfor %}] }
+      {% if mailhost | length > 0 %}
+      - name: "{{ customer.mail.domain }}."
+        rrsets:
+          - { name: "{{ customer.mail.domain }}.", type: MX, records: ["10 {{ mailhost }}."] }
+          - { name: "{{ customer.mail.domain }}.", type: TXT, records: ["\"v=spf1 ip4:{{ lab_net.lab_range }} -all\""] }
+      {% endif %}
       - name: "{{ mgmt.split('.') | reverse | join('.') }}.in-addr.arpa."
         rrsets:
       {% for i in nodes %}

@@ -4,8 +4,8 @@
 #     that no other lab is using the address range
 #   - builds the lab network: an SDN zone with one vnet per network in
 #     network.conf, and the SNAT unit if LAB_SNAT=yes
-#   - registers the lab's names in PowerDNS (openstack.home and the reverse
-#     zones), through the API
+#   - registers the lab's names in PowerDNS (openstack.home, the reverse
+#     zones and the customer's mail domain), through the API
 #   - downloads the Ubuntu cloud image the nodes are built from
 #   - creates the resource pool and a Terraform API user and token
 #   - limits the token to that pool, the datastore, the image storage and the
@@ -33,6 +33,10 @@
 - name: Bootstrap Proxmox
   hosts: proxmox
   gather_facts: false
+  # For customer.mail, the zone the DNS task registers for the customer's
+  # mail domain; group_vars only reach the nodes
+  vars_files:
+    - group_vars/openstack.yml
   vars:
     rotate_token: false
     tf_user: terraform@pve

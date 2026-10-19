@@ -84,9 +84,11 @@ The nodes resolve through Themis (`192.168.8.50`), like any other LAN client.
 
 ## Mail
 
-`cloud.yml` gives the demo customer a mail domain, `demo.test`, with the
+`cloud.yml` gives the demo customer a mail domain, `acme.example`, with the
 mailboxes `ops`, `alice` and `bob` on hermes, the homelab's mailcow. `ops` is
-the Keystone user's email address. The mail is read in SOGo at
+the Keystone user's email address. The domain is registered in the lab's
+PowerDNS zone with an MX for hermes, so the cloud can deliver to it; without
+that record hermes never sees the mail and the sender gets a bounce. The mail is read in SOGo at
 [https://hermes.home/SOGo/](https://hermes.home/SOGo/); the passwords are in
 `secrets/<address>-password`. The teardown deletes the domain and every
 mailbox in it.
@@ -166,7 +168,7 @@ generates, or from `MAILCOW_API_KEY` in the environment. Set `MAILCOW_API=`
 |---|---|
 | Horizon | [https://api.openstack.home/](https://api.openstack.home/), domain `Default`, user `admin`, `keystone_admin_password` from `secrets/passwords.yml` |
 | Customer login | domain `customers`, user `demo`, password in `secrets/demo-password` |
-| Customer mail | [https://hermes.home/SOGo/](https://hermes.home/SOGo/), e.g. `ops@demo.test`, password in `secrets/ops@demo.test-password` |
+| Customer mail | [https://hermes.home/SOGo/](https://hermes.home/SOGo/), e.g. `ops@acme.example`, password in `secrets/ops@acme.example-password` |
 | Grafana | [https://api.openstack.home:3000/](https://api.openstack.home:3000/) |
 | Ceph dashboard | [https://os-1.openstack.home:8443/](https://os-1.openstack.home:8443/) (or the active manager), user `admin`, `ceph_dashboard_password` from `secrets/passwords.yml` |
 | CLI | `ssh ubuntu@os-1.openstack.home`, then `source /opt/kolla/venv/bin/activate` and `export OS_CLOUD=kolla-admin OS_CLIENT_CONFIG_FILE=/etc/kolla/clouds.yaml` |

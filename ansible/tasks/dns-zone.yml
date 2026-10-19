@@ -67,9 +67,11 @@
       {{ existing | rejectattr('name', 'in', zone.rrsets | map(attribute='name') | list) | list
          + existing | selectattr('name', 'in', zone.rrsets | map(attribute='name') | list)
                     | rejectattr('type', 'in', zone.rrsets | map(attribute='type') | list) | list }}
+    # to_json quotes and escapes the content itself: a TXT record carries the
+    # quotes PowerDNS wants, and they would otherwise end the JSON string
     replace: |-
       [{% for r in zone.rrsets %}{"name": "{{ r.name }}", "type": "{{ r.type }}", "ttl": 300, "changetype": "REPLACE",
-        "records": [{% for c in r.records %}{"content": "{{ c }}", "disabled": false}{{ ',' if not loop.last }}{% endfor %}]}{{ ',' if not loop.last }}{% endfor %}]
+        "records": [{% for c in r.records %}{"content": {{ c | to_json }}, "disabled": false}{{ ',' if not loop.last }}{% endfor %}]}{{ ',' if not loop.last }}{% endfor %}]
     delete: |-
       [{% for r in stale %}{"name": "{{ r.name }}", "type": "{{ r.type }}", "changetype": "DELETE"}{{ ',' if not loop.last }}{% endfor %}]
 

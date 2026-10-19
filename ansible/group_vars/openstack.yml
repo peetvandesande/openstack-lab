@@ -74,10 +74,13 @@ customer:
   user: demo
   network_cidr: 10.10.0.0/24
   quota: { instances: 10, cores: 20, ram: 40960, volumes: 10, gigabytes: 500, floating_ips: 5 }
+  # Under example., which RFC 2606 reserves: the LAN's resolver forwards the
+  # whole TLD to the lab's PowerDNS, so tasks/dns.yml registers this domain
+  # with an MX for hermes and nothing on the resolver changes per customer
   mail:
-    domain: demo.test
+    domain: acme.example
     quota: { mailboxes: 10, aliases: 20, domain: 10240, mailbox: 1024 }
     mailboxes:
-      - { local_part: ops, name: Demo Operations }
-      - { local_part: alice, name: Alice Demo }
-      - { local_part: bob, name: Bob Demo }
+      - { local_part: ops, name: Acme Operations }
+      - { local_part: alice, name: Alice Acme }
+      - { local_part: bob, name: Bob Acme }
