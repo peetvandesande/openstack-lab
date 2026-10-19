@@ -54,6 +54,9 @@ enable_valkey: "yes"
 # Orchestration
 enable_heat: "yes"
 enable_horizon: "yes"
+# Customers live in their own Keystone domain, so the login form needs a
+# Domain field; without this Horizon only authenticates against Default
+horizon_keystone_multidomain: "yes"
 
 # Load balancers. Amphora VMs sit on a flat provider network (physnet2,
 # br-lbm) and reach the health managers on the nodes' lbm addresses; with

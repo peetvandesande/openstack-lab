@@ -133,8 +133,9 @@ clouds:
     cacert: /path/to/root.crt
 ```
 
-Send `secrets/root.crt` along with it. In Horizon, the customer logs in with
-domain `customers`.
+Send `secrets/root.crt` along with it. Horizon is the same
+[https://api.openstack.home/](https://api.openstack.home/) the operators use;
+the customer fills in domain `customers` in the login form.
 
 For automation, prefer an **application credential**: the customer creates
 it themselves, it is limited to one project, can expire and can be revoked

@@ -164,7 +164,7 @@ generates, or from `MAILCOW_API_KEY` in the environment. Set `MAILCOW_API=`
 
 | What | Where |
 |---|---|
-| Horizon | [https://api.openstack.home/](https://api.openstack.home/), user `admin`, `keystone_admin_password` from `secrets/passwords.yml` |
+| Horizon | [https://api.openstack.home/](https://api.openstack.home/), domain `Default`, user `admin`, `keystone_admin_password` from `secrets/passwords.yml` |
 | Customer login | domain `customers`, user `demo`, password in `secrets/demo-password` |
 | Customer mail | [https://hermes.home/SOGo/](https://hermes.home/SOGo/), e.g. `ops@demo.test`, password in `secrets/ops@demo.test-password` |
 | Grafana | [https://api.openstack.home:3000/](https://api.openstack.home:3000/) |
