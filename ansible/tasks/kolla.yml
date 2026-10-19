@@ -7,8 +7,13 @@
     kolla-ansible {{ kolla_action }} -i /etc/kolla/multinode {{ kolla_args | default('') }} 2>&1 | tee ~/kolla-logs/{{ kolla_action }}.log | tail -n 40
   args:
     executable: /bin/bash
+  # Default the rest of the PATH, so this works from a play that hasn't
+  # gathered facts: recover.yml calls it with the cloud half broken, when
+  # gathering facts is both slow and beside the point
+  vars:
+    node_path: "{{ ansible_facts.env.PATH | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', true) }}"
   environment:
-    PATH: "{{ kolla_venv }}/bin:{{ ansible_facts.env.PATH }}"
+    PATH: "{{ kolla_venv }}/bin:{{ node_path }}"
     VIRTUAL_ENV: "{{ kolla_venv }}"
   become: true
   become_user: "{{ kolla_user }}"
