@@ -276,7 +276,10 @@ openstack secret delete <secret-href>
 ```
 
 Used by Octavia for TLS certificates, and available to applications through
-the API.
+the API. Barbican runs with its new policy defaults
+(`/etc/kolla/config/barbican.conf`), so the `member` role is enough. Under
+the legacy rules a customer needs `creator` as well, and Horizon's load
+balancer wizard fails with a permission error.
 
 ## Orchestration (Heat)
 

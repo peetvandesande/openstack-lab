@@ -149,6 +149,21 @@
         mode: "0644"
       tags: kolla-config
 
+    # Barbican still enforces its legacy rules by default, which only let
+    # users with creator, observer or audit near secrets. The new ones accept
+    # member, like every other service, so a customer can list certificates
+    # for a TLS listener, and Horizon's load balancer wizard stops failing on
+    # them
+    - name: Let project members use Barbican
+      ansible.builtin.copy:
+        dest: /etc/kolla/config/barbican.conf
+        content: |
+          [oslo_policy]
+          enforce_new_defaults = True
+        mode: "0644"
+      when: enable_barbican
+      tags: kolla-config
+
     # kolla-genpwd only fills in empty entries, so re-running keeps the
     # existing passwords
     - name: Create passwords.yml
