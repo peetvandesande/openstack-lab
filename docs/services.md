@@ -145,6 +145,13 @@ VIP_PORT=$(openstack loadbalancer show web-lb -f value -c vip_port_id)
 openstack floating ip create --port "$VIP_PORT" public
 ```
 
+Don't put the VIP on `public` itself (`--vip-subnet-id public-subnet`). It
+shows `ACTIVE` and `ONLINE` but only answers when the amphora happens to run
+on a node that hosts a router gateway. OVN 26.03 only accepts ARP requests
+from the provider network on those nodes, and drops them everywhere else. The
+same goes for instances attached to `public` directly. Floating IPs aren't
+affected.
+
 The members' security group must allow the traffic from the load balancer.
 An amphora load balancer takes a minute or two to reach `ACTIVE`.
 
