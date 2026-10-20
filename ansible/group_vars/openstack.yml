@@ -14,6 +14,14 @@ kolla_user: ubuntu
 # mirror your own images for anything else
 kolla_use_test_images: true
 
+# Horizon is Kolla's image with the lab's patches on top, built on each node
+# by ansible/horizon.yml (patches in ansible/templates/horizon/patches). For
+# now one: PROMETHEUS listeners in the Octavia dashboard, until upstream has
+# them
+horizon_base_image: quay.io/openstack.kolla/horizon:{{ openstack_release }}-ubuntu-noble
+horizon_lab_image: openstack-lab/horizon
+horizon_lab_tag: "{{ openstack_release }}-ubuntu-noble"
+
 # Pinned to the version of Ubuntu's ceph-common: later Squid releases create
 # keys in a format older clients (the host CLI, the OpenStack containers)
 # cannot parse

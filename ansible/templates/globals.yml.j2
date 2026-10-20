@@ -54,6 +54,10 @@ enable_valkey: "yes"
 # Orchestration
 enable_heat: "yes"
 enable_horizon: "yes"
+# Built locally by ansible/horizon.yml, so `kolla-ansible pull` must skip it
+# (--skip-tags horizon)
+horizon_image: "{{ horizon_lab_image }}"
+horizon_tag: "{{ horizon_lab_tag }}"
 # Customers live in their own Keystone domain, so the login form needs a
 # Domain field; without this Horizon only authenticates against Default
 horizon_keystone_multidomain: "yes"

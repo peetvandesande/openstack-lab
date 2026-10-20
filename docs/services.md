@@ -188,6 +188,25 @@ openstack loadbalancer member set --weight 0 web-pool <member>   # drain a membe
 openstack loadbalancer delete --cascade web-lb
 ```
 
+### Traffic and metrics
+
+`openstack loadbalancer stats show web-lb` (or `listener stats show`) gives
+the totals since the load balancer was created: connections, bytes in and
+out, request errors. For graphs, add a `PROMETHEUS` listener: the amphora then
+serves HAProxy's metrics per listener, pool and member on that port, for any
+Prometheus to scrape.
+
+```sh
+openstack loadbalancer listener create --protocol PROMETHEUS --protocol-port 8088 \
+  --allowed-cidr 192.168.0.0/16 --name web-metrics --wait web-lb
+curl http://<lb-floating-ip>:8088/metrics
+```
+
+Horizon offers the protocol too, through a patch the lab carries until the
+Octavia dashboard has it (see [Updates](updates.md#openstack-minor-updates)).
+It doesn't have a pool, so the wizard turns pool and monitor creation off.
+PROMETHEUS listeners need the amphora provider.
+
 ### Admin: amphorae
 
 ```sh

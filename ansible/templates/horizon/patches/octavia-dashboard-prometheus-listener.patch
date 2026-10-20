@@ -1,0 +1,213 @@
+From 1e015021ef320c15c8806d78f1ecdbe25910438b Mon Sep 17 00:00:00 2001
+From: Peet van de Sande <peet@peetvandesande.com>
+Date: Tue, 20 Oct 2026 12:32:33 +0000
+Subject: [PATCH] Add PROMETHEUS listener protocol
+
+Octavia added the PROMETHEUS listener protocol in API version 2.25. It
+exposes the load balancer's metrics in the Prometheus format, but the
+dashboard did not offer it, so these listeners could only be created
+from the CLI.
+
+Offer PROMETHEUS in the listener protocol list. A PROMETHEUS listener
+cannot have a default pool, so selecting it turns off pool and health
+monitor creation in the wizard and locks those toggles, the pool is
+removed from the request, and the default pool selection is hidden
+when editing such a listener.
+
+TLS on PROMETHEUS listeners is left for a follow-up.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../workflow/listener/listener.controller.js  |  6 ++++++
+ .../listener/listener.controller.spec.js      | 12 +++++++++++
+ .../workflow/listener/listener.help.html      |  3 ++-
+ .../lbaasv2/workflow/listener/listener.html   |  3 ++-
+ .../project/lbaasv2/workflow/model.service.js |  8 +++++---
+ .../lbaasv2/workflow/model.service.spec.js    | 20 ++++++++++++++++---
+ .../lbaasv2/workflow/monitor/monitor.html     |  4 ++++
+ .../project/lbaasv2/workflow/pool/pool.html   |  4 ++++
+ 8 files changed, 52 insertions(+), 8 deletions(-)
+
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.js b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.js
+index ad219f5..3c5d8ab 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.js
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.js
+@@ -65,6 +65,12 @@
+         member.port = { HTTP: 80, TERMINATED_HTTPS: 80 }[protocol];
+       });
+ 
++      if (protocol === 'PROMETHEUS') {
++        // A PROMETHEUS listener serves metrics itself and cannot have a pool
++        $scope.model.context.create_pool = false;
++        $scope.model.context.create_monitor = false;
++      }
++
+       if (protocol === 'TERMINATED_HTTPS') {
+         $('#wizard-side-nav ul li:last').show();
+       } else {
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.spec.js b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.spec.js
+index aca2d4a..7c4abb5 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.spec.js
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.spec.js
+@@ -83,6 +83,18 @@
+         expect(listener.protocol_port).toBeUndefined();
+       });
+ 
++      it('should update port on protocol change to PROMETHEUS', function() {
++        ctrl.protocolChange('PROMETHEUS');
++        expect(listener.protocol_port).toBeUndefined();
++      });
++
++      it('should not create a pool or monitor for a PROMETHEUS listener', function() {
++        ctrl.protocolChange('PROMETHEUS');
++        expect(scope.model.context.create_listener).toBe(true);
++        expect(scope.model.context.create_pool).toBe(false);
++        expect(scope.model.context.create_monitor).toBe(false);
++      });
++
+       it('should update member ports on protocol change to TERMINATED_HTTPS', function() {
+         ctrl.protocolChange('TERMINATED_HTTPS');
+ 
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.help.html b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.help.html
+index 8e31136..468efd2 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.help.html
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.help.html
+@@ -8,7 +8,8 @@
+   <translate>
+   The protocol for which the front end listens. The TERMINATED_HTTPS protocol is only available if
+   the key-manager service is enabled and you have authority to list certificate containers and
+-  secrets.
++  secrets. A PROMETHEUS listener exposes the load balancer's metrics in the Prometheus format
++  and cannot have a pool.
+   </translate>
+ </p>
+ <p>
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.html b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.html
+index d1aa9f6..a288db1 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.html
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.html
+@@ -159,7 +159,8 @@
+         </div>
+       </div>
+ 
+-      <div class="col-xs-12 col-sm-8 col-md-6" ng-if="model.context.id">
++      <div class="col-xs-12 col-sm-8 col-md-6"
++           ng-if="model.context.id && model.spec.listener.protocol !== 'PROMETHEUS'">
+         <div class="form-group">
+           <label class="control-label">
+             <translate>Default Pool ID</translate>
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.js b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.js
+index 4f6994e..75566a6 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.js
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.js
+@@ -86,7 +86,8 @@
+       members: [],
+       networks: {},
+       flavors: {},
+-      listenerProtocols: ['HTTP', 'TCP', 'TERMINATED_HTTPS', 'HTTPS', 'UDP', 'SCTP'],
++      listenerProtocols: ['HTTP', 'TCP', 'TERMINATED_HTTPS', 'HTTPS', 'UDP', 'SCTP',
++        'PROMETHEUS'],
+       availability_zones: {},
+       l7policyActions: [
+         {value: 'REJECT', label: gettext('Reject')},
+@@ -566,8 +567,9 @@
+ 
+     function cleanFinalSpecPool(finalSpec) {
+ 
+-      // Pool requires method
+-      if (!finalSpec.pool.lb_algorithm) {
++      // Pool requires method, and a PROMETHEUS listener cannot have one
++      if (!finalSpec.pool.lb_algorithm ||
++          finalSpec.listener && finalSpec.listener.protocol === 'PROMETHEUS') {
+         delete finalSpec.pool;
+       } else {
+         // The pool protocol must be HTTP if the listener protocol is TERMINATED_HTTPS and
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.spec.js b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.spec.js
+index 9c78cc5..a58cd16 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.spec.js
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.spec.js
+@@ -495,7 +495,7 @@
+ 
+       it('has array of listener protocols', function() {
+         expect(model.listenerProtocols).toEqual(['HTTP', 'TCP', 'TERMINATED_HTTPS', 'HTTPS',
+-          'UDP', 'SCTP']);
++          'UDP', 'SCTP', 'PROMETHEUS']);
+       });
+ 
+       it('has array of pool lb_algorithms', function() {
+@@ -874,7 +874,7 @@
+       });
+ 
+       it('should initialize listener protocols', function() {
+-        expect(model.listenerProtocols.length).toBe(6);
++        expect(model.listenerProtocols.length).toBe(7);
+         expect(model.listenerProtocols.indexOf('TERMINATED_HTTPS')).toBe(2);
+       });
+     });
+@@ -925,7 +925,7 @@
+       });
+ 
+       it('should initialize listener protocols', function() {
+-        expect(model.listenerProtocols.length).toBe(5);
++        expect(model.listenerProtocols.length).toBe(6);
+         expect(model.listenerProtocols.indexOf('TERMINATED_HTTPS')).toBe(-1);
+       });
+     });
+@@ -1794,6 +1794,20 @@
+         expect(finalSpec.pool).toBeUndefined();
+       });
+ 
++      it('should delete pool if the listener protocol is PROMETHEUS', function() {
++        model.spec.loadbalancer.vip_address = '1.2.3.4';
++        model.spec.loadbalancer.vip_subnet_id = model.subnets[0];
++        model.spec.listener.protocol = 'PROMETHEUS';
++        model.spec.listener.protocol_port = 8088;
++        model.spec.pool.lb_algorithm = 'ROUND_ROBIN';
++
++        var finalSpec = model.submit();
++
++        expect(finalSpec.loadbalancer).toBeDefined();
++        expect(finalSpec.listener.protocol).toBe('PROMETHEUS');
++        expect(finalSpec.pool).toBeUndefined();
++      });
++
+       it('should delete members if none selected', function() {
+         model.spec.loadbalancer.vip_address = '1.2.3.4';
+         model.spec.loadbalancer.vip_subnet_id = model.subnets[0];
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/monitor/monitor.html b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/monitor/monitor.html
+index d421a7f..f8798a2 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/monitor/monitor.html
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/monitor/monitor.html
+@@ -12,8 +12,12 @@
+                    ng-repeat="option in model.yesNoOptions"
+                    ng-model="model.context.create_monitor"
+                    ng-change="ctrl.createChange()"
++                   ng-disabled="model.spec.listener.protocol === 'PROMETHEUS'"
+                    uib-btn-radio="option.value">{$ ::option.label $}</label>
+           </div>
++          <span class="help-block" ng-if="model.spec.listener.protocol === 'PROMETHEUS'" translate>
++            A PROMETHEUS listener cannot have a pool.
++          </span>
+         </div>
+       </div>
+     </div>
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/pool/pool.html b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/pool/pool.html
+index 81d7bcd..77222af 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/pool/pool.html
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/pool/pool.html
+@@ -12,8 +12,12 @@
+                    ng-repeat="option in model.yesNoOptions"
+                    ng-model="model.context.create_pool"
+                    ng-change="ctrl.createChange()"
++                   ng-disabled="model.spec.listener.protocol === 'PROMETHEUS'"
+                    uib-btn-radio="option.value">{$ ::option.label $}</label>
+           </div>
++          <span class="help-block" ng-if="model.spec.listener.protocol === 'PROMETHEUS'" translate>
++            A PROMETHEUS listener cannot have a pool.
++          </span>
+         </div>
+       </div>
+     </div>
+-- 
+2.47.3
+

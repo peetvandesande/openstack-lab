@@ -12,6 +12,9 @@
 - name: Deployment host and Docker
   ansible.builtin.import_playbook: kolla-host.yml
 
+- name: Horizon image
+  ansible.builtin.import_playbook: horizon.yml
+
 - name: Ceph
   ansible.builtin.import_playbook: ceph.yml
 

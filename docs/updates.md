@@ -145,8 +145,22 @@ Within 2026.1, fixes arrive as new Kolla-Ansible commits on
 
 3. **Pull, check and upgrade**:
 
+   Horizon isn't pulled: the lab builds its own image on top of Kolla's
+   (Kolla's image with the lab's dashboard patches). Rebuild it first, from
+   your own machine, so it starts from the new upstream image:
+
    ```sh
-   kolla-ansible pull -i /etc/kolla/multinode
+   ansible-playbook ansible/horizon.yml
+   ```
+
+   If a patch no longer applies, the build fails. Either upstream has
+   merged it (delete it from `ansible/templates/horizon/patches`) or the code
+   around it changed (refresh it from the branch it came from).
+
+   Then, on `os-1`:
+
+   ```sh
+   kolla-ansible pull -i /etc/kolla/multinode --skip-tags horizon
    kolla-ansible prechecks -i /etc/kolla/multinode --use-test-images
    kolla-ansible upgrade -i /etc/kolla/multinode
    ```
@@ -221,8 +235,22 @@ from one SLURP release to the next (2026.1 → 2027.1). Not further.
 
 7. **Pull, check and upgrade**:
 
+   Horizon isn't pulled: the lab builds its own image on top of Kolla's
+   (Kolla's image with the lab's dashboard patches). Rebuild it first, from
+   your own machine, so it starts from the new upstream image:
+
    ```sh
-   kolla-ansible pull -i /etc/kolla/multinode
+   ansible-playbook ansible/horizon.yml
+   ```
+
+   If a patch no longer applies, the build fails. Either upstream has
+   merged it (delete it from `ansible/templates/horizon/patches`) or the code
+   around it changed (refresh it from the branch it came from).
+
+   Then, on `os-1`:
+
+   ```sh
+   kolla-ansible pull -i /etc/kolla/multinode --skip-tags horizon
    kolla-ansible prechecks -i /etc/kolla/multinode --use-test-images
    kolla-ansible upgrade -i /etc/kolla/multinode
    ```

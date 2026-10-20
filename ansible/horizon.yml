@@ -1,0 +1,38 @@
+# Builds the lab's Horizon image on every node: Kolla's image, with the
+# patches in templates/horizon/patches applied. There is no registry for it,
+# so each node builds its own and Kolla finds it locally (the pull steps skip
+# horizon). Imported by site.yml after kolla-host.yml, which installs Docker.
+#
+# Re-run it after Kolla publishes new images, before the upgrade:
+#   ansible-playbook ansible/horizon.yml
+
+- name: Build the Horizon image
+  hosts: openstack
+  gather_facts: false
+  vars:
+    build_dir: /opt/kolla/horizon-image
+  tasks:
+    - name: Create the build directory
+      ansible.builtin.file:
+        path: "{{ build_dir }}/patches"
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Copy the Dockerfile and the patches
+      ansible.builtin.copy:
+        src: templates/horizon/
+        dest: "{{ build_dir }}/"
+        mode: "0644"
+      become: true
+
+    # --pull fetches the newest upstream image under the tag first, so a
+    # rebuild picks up Kolla's fixes. Host networking, because Kolla turns
+    # Docker's bridge off
+    - name: Build the image
+      ansible.builtin.command: >-
+        docker build --pull --network host
+        --build-arg BASE={{ horizon_base_image }}
+        -t {{ horizon_lab_image }}:{{ horizon_lab_tag }} {{ build_dir }}
+      become: true
+      changed_when: true
