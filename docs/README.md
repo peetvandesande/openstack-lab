@@ -10,6 +10,7 @@ building and removing it.
 | [Instances](instances.md) | VMs: create, access, resize, snapshot, migrate, delete; volumes, images and flavours |
 | [Networking and services](services.md) | Networks, routers, floating IPs, security groups, load balancers, DNS, object storage, secrets |
 | [Containers](containers.md) | Running containers for tenants, and what the lab does not offer |
+| [Studying storage](storage-lab.md) | Exercises that use the lab to learn distributed storage: RADOS and CRUSH, erasure coding, failure drills, Cinder on RBD, RGW, measurement |
 | [Updates](updates.md) | Node OS patching, OpenStack minor updates and release upgrades, Ceph, the Proxmox host |
 
 ## Conventions
