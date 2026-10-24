@@ -82,6 +82,14 @@ MariaDB Galera then has no member left to rejoin and needs a recovery step.
      | xargs -r -n1 openstack server stop
    ```
 
+   Or stop everything in one project at once:
+
+   ```sh
+   openstack project list
+   openstack server list --project <project> --status ACTIVE -f value -c ID \
+     | xargs -r -n1 openstack server stop
+   ```
+
 2. Stop Ceph rebalancing while nodes go down. `noout` is a cluster-wide flag,
    so set it once, on any node (`os-1` is simplest):
 
@@ -241,7 +249,8 @@ where the control plane comes back.
    openstack server start <server> [<server> ...]
    ```
 
-   Or start everything in one project at once:
+   Or start everything in one project at once (`openstack project list`
+   shows the projects):
 
    ```sh
    openstack server list --project <project> --status SHUTOFF -f value -c ID \
