@@ -241,6 +241,13 @@ where the control plane comes back.
    openstack server start <server> [<server> ...]
    ```
 
+   Or start everything in one project at once:
+
+   ```sh
+   openstack server list --project <project> --status SHUTOFF -f value -c ID \
+     | xargs -r -n1 openstack server start
+   ```
+
 ### What the symptom tells you
 
 | Symptom | Cause | Go to |
