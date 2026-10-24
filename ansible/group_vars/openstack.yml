@@ -5,7 +5,7 @@
 # OpenStack clients are installed there, and cephadm runs from it
 deploy_host: "{{ groups['openstack'] | first }}"
 
-openstack_release: "2026.1"
+openstack_release: "2026.2"
 kolla_ansible_source: git+https://opendev.org/openstack/kolla-ansible@stable/{{ openstack_release }}
 kolla_venv: /opt/kolla/venv
 kolla_user: ubuntu
