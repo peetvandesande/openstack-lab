@@ -149,13 +149,16 @@ The steps below are the same thing by hand. Work through them in order and
 check each one before moving on: steps 1 to 4 build the foundation, step 5 is
 where the control plane comes back.
 
-1. **Start the nodes.** On lenora:
+1. **Start the nodes.**
 
    ```sh
-   for id in 9201 9202 9203; do qm start $id; done
+   ssh lenora 'for id in 9201 9202 9203; do qm start $id; done'
    ```
 
-   Wait until all three answer SSH. Everything below runs on `os-1`.
+   Wait until all three answer SSH. Everything below runs on `os-1`:
+   ```sh
+   ssh os-1
+   ```
 
 2. **Check the hostnames.** Kolla needs each node's short name to resolve to
    its own management address; if cloud-init has taken `/etc/hosts` over
