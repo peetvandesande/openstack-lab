@@ -88,8 +88,9 @@ For each of `os-3`, `os-2` and then `os-1`:
    sudo reboot
    ```
 
-   When patching `os-1`, the venv and the CLI are away until it is back;
-   `sudo ceph` works on every node in the meantime.
+   When patching `os-1`, its venv and the OpenStack CLI are away until it is
+   back; `sudo ceph` keeps working, on `os-2` and `os-3` as well, since every
+   node has `ceph-common` and the admin keyring.
 
 4. **Wait until it is back**, then check:
 

@@ -4,6 +4,20 @@
 # and writes them into /etc/kolla/config. Imported by site.yml after
 # kolla-host.yml, which installs Docker.
 
+# The CLI and cephadm go on every node, so `sudo ceph` and `sudo cephadm
+# shell` work wherever you are; the config and the admin keyring arrive with
+# the _admin label below.
+# --no-install-recommends: cephadm recommends podman, but Kolla's Docker is
+# used instead
+- name: Install the Ceph packages
+  hosts: openstack
+  gather_facts: false
+  tasks:
+    - name: Install cephadm and the Ceph CLI
+      ansible.builtin.apt:
+        name: [cephadm, ceph-common]
+        install_recommends: false
+
 - name: Deploy Ceph
   hosts: openstack[0]
   gather_facts: false
@@ -35,13 +49,6 @@
       - { dir: nova, keys: [cinder] }
       - { dir: gnocchi, keys: [gnocchi] }
   tasks:
-    # --no-install-recommends: cephadm recommends podman, but Kolla's Docker
-    # is used instead
-    - name: Install cephadm and the Ceph CLI
-      ansible.builtin.apt:
-        name: [cephadm, ceph-common]
-        install_recommends: false
-
     - name: Check for an existing cluster
       ansible.builtin.stat:
         path: /etc/ceph/ceph.conf
