@@ -1,0 +1,134 @@
+From 33e7f71b112f3234425e335c8529252f98df3cda Mon Sep 17 00:00:00 2001
+From: Pierre-Yves Jourel <pierre-yves.jourel@ovhcloud.com>
+Date: Tue, 29 Nov 2022 15:18:01 -0500
+Subject: [PATCH 1/2] Add ability to create Prometheus listener
+
+This changes allows the user to create a Prometheus listener through Horizon.
+
+Story 2010300
+Task 46296
+
+Change-Id: Ia5eaaa2be4d7ed6b8855b9cc7d6baf62631754fb
+Signed-off-by: Gregory Thiemonge <gthiemon@redhat.com>
+Assisted-by: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>
+(cherry picked from commit 46f616d7a75d11cae10f67e3f82485cfbed1544e)
+---
+ .../workflow/listener/listener.controller.js   | 18 ++++++++++++++++--
+ .../listener/listener.controller.spec.js       |  5 +++++
+ .../project/lbaasv2/workflow/model.service.js  |  2 +-
+ .../lbaasv2/workflow/model.service.spec.js     |  9 +++++----
+ 4 files changed, 27 insertions(+), 7 deletions(-)
+
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.js b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.js
+index da728db..9e44f6d 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.js
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.js
+@@ -55,7 +55,8 @@
+ 
+     function filterPortsByProtocol(protocol) {
+       if (protocol && $scope.model && $scope.model.allocatedListeners) {
+-        var tcpFamily = ['TCP', 'HTTP', 'HTTPS', 'TERMINATED_HTTPS', 'PROXY', 'PROXYV2'];
++        var tcpFamily = ['TCP', 'HTTP', 'HTTPS', 'TERMINATED_HTTPS',
++          'PROXY', 'PROXYV2', 'PROMETHEUS'];
+         var currentFamily = tcpFamily.indexOf(protocol) !== -1 ? 'TCP' : protocol;
+ 
+         $scope.model.listenerPorts = [];
+@@ -74,7 +75,8 @@
+ 
+     function protocolChange(protocol) {
+       filterPortsByProtocol(protocol);
+-      var defaultPort = { HTTP: 80, TERMINATED_HTTPS: 443 }[protocol];
++      var defaultPort = { HTTP: 80, TERMINATED_HTTPS: 443, PROMETHEUS: 9100 }[protocol];
++      var nextButtonSelector = "div.modal-footer button:nth-last-of-type(2)";
+       while (listenerPortExists(defaultPort)) {
+         defaultPort += 1;
+       }
+@@ -85,6 +87,18 @@
+         member.port = { HTTP: 80, TERMINATED_HTTPS: 80 }[protocol];
+       });
+ 
++      if (protocol === 'PROMETHEUS') {
++        $('#wizard-side-nav ul').children().slice($scope.currentIndex + 1).hide();
++        $scope.model.context.create_pool = false;
++        $scope.model.context.create_monitor = false;
++        $(nextButtonSelector).attr("disabled", "");
++      } else {
++        $('#wizard-side-nav ul').children().slice($scope.currentIndex + 1).show();
++        $scope.model.context.create_pool = true;
++        $scope.model.context.create_monitor = true;
++        $(nextButtonSelector).removeAttr("disabled");
++      }
++
+       if (protocol === 'TERMINATED_HTTPS') {
+         $('#wizard-side-nav ul li:last').show();
+       } else {
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.spec.js b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.spec.js
+index acafca6..cfed2de 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.spec.js
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/listener/listener.controller.spec.js
+@@ -68,6 +68,11 @@
+         expect(listener.protocol_port).toBe(443);
+       });
+ 
++      it('should update port on protocol change to PROMETHEUS', function() {
++        ctrl.protocolChange('PROMETHEUS');
++        expect(listener.protocol_port).toBe(9100);
++      });
++
+       it('should update port on protocol change to TCP', function() {
+         ctrl.protocolChange('TCP');
+         expect(listener.protocol_port).toBeUndefined();
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.js b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.js
+index 20a0ab5..f2cd73f 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.js
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.js
+@@ -86,7 +86,7 @@
+       members: [],
+       networks: {},
+       flavors: {},
+-      listenerProtocols: ['HTTP', 'TCP', 'TERMINATED_HTTPS', 'HTTPS', 'UDP', 'SCTP'],
++      listenerProtocols: ['HTTP', 'TCP', 'TERMINATED_HTTPS', 'HTTPS', 'UDP', 'SCTP', 'PROMETHEUS'],
+       availability_zones: {},
+       l7policyActions: [
+         {value: 'REJECT', label: gettext('Reject')},
+diff --git a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.spec.js b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.spec.js
+index a809819..4f8e148 100644
+--- a/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.spec.js
++++ b/octavia_dashboard/static/dashboard/project/lbaasv2/workflow/model.service.spec.js
+@@ -527,7 +527,7 @@
+ 
+       it('has array of listener protocols', function() {
+         expect(model.listenerProtocols).toEqual(['HTTP', 'TCP', 'TERMINATED_HTTPS', 'HTTPS',
+-          'UDP', 'SCTP']);
++          'UDP', 'SCTP', 'PROMETHEUS']);
+       });
+ 
+       it('has array of pool lb_algorithms', function() {
+@@ -909,8 +909,9 @@
+       });
+ 
+       it('should initialize listener protocols', function() {
+-        expect(model.listenerProtocols.length).toBe(6);
++        expect(model.listenerProtocols.length).toBe(7);
+         expect(model.listenerProtocols.indexOf('TERMINATED_HTTPS')).toBe(2);
++        expect(model.listenerProtocols.indexOf('PROMETHEUS')).toBe(6);
+       });
+     });
+ 
+@@ -960,11 +961,11 @@
+       });
+ 
+       it('should initialize listener protocols', function() {
+-        expect(model.listenerProtocols.length).toBe(5);
++        expect(model.listenerProtocols.length).toBe(6);
+         expect(model.listenerProtocols.indexOf('TERMINATED_HTTPS')).toBe(-1);
+         model.initialize('loadbalancer');
+         scope.$apply();
+-        expect(model.listenerProtocols.length).toBe(5);
++        expect(model.listenerProtocols.length).toBe(6);
+       });
+     });
+ 
+-- 
+2.54.0 (Apple Git-157)
+

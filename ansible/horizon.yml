@@ -12,6 +12,14 @@
   vars:
     build_dir: /opt/kolla/horizon-image
   tasks:
+    # The copy below only adds files, so a patch dropped or renamed here
+    # would otherwise stay on the node and still be applied
+    - name: Remove the patches of the last build
+      ansible.builtin.file:
+        path: "{{ build_dir }}/patches"
+        state: absent
+      become: true
+
     - name: Create the build directory
       ansible.builtin.file:
         path: "{{ build_dir }}/patches"
